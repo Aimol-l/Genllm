@@ -1,0 +1,36 @@
+# 构建输出
+bin/
+build/
+dist/
+
+*.o
+*.so
+*.a
+*.dll
+*.exe
+
+# IDE
+.vscode/
+.claude/
+
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 日志和临时文件
+*.log
+*.tmp
+*.temp
+
+# 依赖目录
+deps/
+third_party/
+
+# 备份文件
+*.bak
+*.backup
