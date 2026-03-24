@@ -2,11 +2,11 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include <memory>
 #include <cstdint>
 #include <print>
 #include <format>
 #include <stdexcept>
+#include <memory>
 #include <algorithm>
 #include "tensor.hpp"
 #include "graph.h"
@@ -23,13 +23,13 @@ protected:
 public:
     std::string name = "unknow";
     // 计算图（由 build_graph 构建）
-    ComputeGraph graph;
+    ComputeGraph graph_;
     virtual ~ModelBase() = 0;
     virtual void print_info() = 0;
     // 设置模型参数
     virtual void set_params(void*) = 0;
     // 构建计算图
-    virtual Tensor* build_graph(const GGUFInfo&) = 0;
+    virtual ComputeGraph& build_graph(const GGUFInfo&) = 0;
     // 加载权重（使用内存管理器分配内存）
     virtual void load_weights(GGUFInfo& info, MemoryManager* mem_manager) = 0;
 };

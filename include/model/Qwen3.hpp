@@ -41,7 +41,7 @@ public:
 
     void print_info() override;
     void set_params(void*) override;
-    ComputeGraph* build_graph(const GGUFInfo& info) override;
+    ComputeGraph& build_graph(const GGUFInfo& info) override;
 
     // 加载权重（使用内存管理器）
     void load_weights(GGUFInfo& info, MemoryManager* mem_manager) override;

@@ -98,7 +98,7 @@ Tensor* Qwen3Model::build_qwen3_layer(
     return layer_output;
 }
 
-ComputeGraph* Qwen3Model::build_graph(const GGUFInfo& info){
+ComputeGraph& Qwen3Model::build_graph(const GGUFInfo& info){
     std::println("Building Qwen3 computation graph...");
     // ========== Step 1: 解析配置参数 ==========
     auto& meta = info.metadata;
@@ -114,15 +114,11 @@ ComputeGraph* Qwen3Model::build_graph(const GGUFInfo& info){
     float rope_theta = meta.value("qwen3.rope_freq_base", 1000000.0f);
     int max_seq_len = meta.value("qwen3.context_length", 40960);
     // ========== Step 2: 创建输入节点 ==========
-    auto* graph = new ComputeGraph();
     // input_ids: [batch, seq_len] seq_len是token的数量
     Tensor* input_ids = OpFactory::placeholder(DataType::GGML_TYPE_I32,TensorType::TENSOR_TYPE_INPUT, {1, -1},"input_ids");
-    graph->add_tensor(input_ids);  // 图接管所有权
     // ========== Step 3: 预计算 RoPE ==========
     // precompute_rope 只需要一次，与输入无关
     auto[rope_sin,rope_cos] = OpFactory::rope_cache(max_seq_len, head_dim, rope_theta,DataType::GGML_TYPE_F32);
-    graph->add_tensor(rope_cos);
-    graph->add_tensor(rope_sin);
     // ========== Step 4: 嵌入层 ==========
     const TensorInfo* embd_weight_info = OpFactory::find_tensor(info, "token_embd.weight");
     if (!embd_weight_info) {
@@ -130,8 +126,7 @@ ComputeGraph* Qwen3Model::build_graph(const GGUFInfo& info){
     }
     // Embedding lookup: input_ids → x_in [batch, seq_len, hidden_size]
     Tensor* x_in = OpFactory::embedding_lookup(input_ids, embd_weight_info,"x_in"); //{1, seq_len, hidden_size}
-    graph->add_tensor(x_in);
-    // ========== Step 5: 循环构建 28 层 ==========
+    // ========== Step 5: 循环构建 num_layers 层 ==========
     Tensor* prev_output = x_in;
     for (int layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
         prev_output = this->build_qwen3_layer(
@@ -149,52 +144,43 @@ ComputeGraph* Qwen3Model::build_graph(const GGUFInfo& info){
         );
     }
     // ========== Step 6: 最终归一化 + LM Head ==========
-    // 查找 output_norm.weight
     const TensorInfo* output_norm_info = OpFactory::find_tensor(info, "output_norm.weight");
     Tensor* final_norm = OpFactory::rms_norm(prev_output,output_norm_info,rms_norm_eps,"final_norm");
-    // LM Head: Linear(final_norm, token_embd.weight.T)
     Tensor* logits = OpFactory::linear(final_norm,embd_weight_info,true,"logits"); //{1, seq_len, vocab_size}
-    
-    graph->add_tensor(final_norm);
-    graph->add_tensor(logits);
-    
-    // ========== Step 8: 标记输入/输出 ==========
-    graph->set_input("input_ids", input_ids);
-    graph->set_output("logits", logits);
-    
-    // ========== Step 9: 构建执行顺序 (拓扑排序) ==========
-    graph->build_exec_order();
-    
-    std::println("  ✓ Graph built: {} nodes", graph->tensor_count());
-    return graph;  // 裸指针，所有权转移给调用者
+    // ========== Step 3: 从 logits 反向收集，构建 ComputeGraph ==========
+    this->graph_.clear();  // 确保干净
+    this->graph_.collect_from_root(logits, {input_ids, rope_cos, rope_sin});
+    this->graph_.set_input("input_ids", input_ids);
+    this->graph_.set_output("logits", logits);
+    return this->graph_;
 }
 
-void Qwen3Model::load_weights(GGUFInfo& info, MemoryManager* mem_manager) {
-    if (!mem_manager) {
-        throw std::runtime_error("Memory manager is null");
-    }
-    std::println("\n=== Loading Qwen3 weights ===");
-    // TODO: 实现实际的权重加载逻辑
-    // 1. 遍历 info.tensors_info，找到每个权重张量
-    // 2. 从 graph.m_leafs 中找到对应的 Tensor 对象
-    // 3. 打开 GGUF 文件
-    // 4. 读取张量数据到已分配的内存（tensor->data）
-    std::println("  Total tensors in GGUF: {}", info.tensors_info.size());
-    std::println("  Total leaf tensors in graph: {}", graph.m_leafs.size());
-    // 示例：遍历图中的叶子节点（权重）
-    for (auto* leaf : graph.m_leafs) {
-        if (!leaf || leaf->name.empty()) continue;
-        std::println("  Found weight: {}", leaf->name);
-        // 检查是否已分配内存
-        if (leaf->data) {
-            std::println("    Already allocated at 0x{:x}", reinterpret_cast<uintptr_t>(leaf->data));
-        } else {
-            std::println("    Not allocated yet");
-        }
-        // TODO: 从 GGUF 文件加载数据
-        // 1. 在 info.tensors_info 中查找 leaf->name
-        // 2. 获取张量的文件偏移量和大小
-        // 3. 打开 GGUF 文件并读取数据到 leaf->data
-    }
-    std::println("\nWeight loading completed!");
-}
+// void Qwen3Model::load_weights(GGUFInfo& info, MemoryManager* mem_manager) {
+//     if (!mem_manager) {
+//         throw std::runtime_error("Memory manager is null");
+//     }
+//     std::println("\n=== Loading Qwen3 weights ===");
+//     // TODO: 实现实际的权重加载逻辑
+//     // 1. 遍历 info.tensors_info，找到每个权重张量
+//     // 2. 从 graph.m_leafs 中找到对应的 Tensor 对象
+//     // 3. 打开 GGUF 文件
+//     // 4. 读取张量数据到已分配的内存（tensor->data）
+//     std::println("  Total tensors in GGUF: {}", info.tensors_info.size());
+//     std::println("  Total leaf tensors in graph: {}", graph.m_leafs.size());
+//     // 示例：遍历图中的叶子节点（权重）
+//     for (auto* leaf : graph.m_leafs) {
+//         if (!leaf || leaf->name.empty()) continue;
+//         std::println("  Found weight: {}", leaf->name);
+//         // 检查是否已分配内存
+//         if (leaf->data) {
+//             std::println("    Already allocated at 0x{:x}", reinterpret_cast<uintptr_t>(leaf->data));
+//         } else {
+//             std::println("    Not allocated yet");
+//         }
+//         // TODO: 从 GGUF 文件加载数据
+//         // 1. 在 info.tensors_info 中查找 leaf->name
+//         // 2. 获取张量的文件偏移量和大小
+//         // 3. 打开 GGUF 文件并读取数据到 leaf->data
+//     }
+//     std::println("\nWeight loading completed!");
+// }

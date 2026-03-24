@@ -1,12 +1,12 @@
 #include <iostream>
 #include "graph.h"
-#include "model.h"
 #include "scheduler.h"
 #include "executor.h"
 #include "backend.h"
 #include "context.hpp"
 #include "memory.hpp"
 #include "gguf_parser.h"
+#include "model/model.h"
 
 
 int main() {
@@ -28,7 +28,7 @@ int main() {
 
         // ==================== 3. 构建计算图 ====================
         std::println("\n=== Step 3: Building computation graph ===");
-        ComputeGraph* graph = model->build_graph(info);
+        ComputeGraph& graph = model->build_graph(info);
         
         // ==================== 4. 创建调度器 ====================
         std::println("\n=== Step 4: Creating scheduler ===");
@@ -40,7 +40,7 @@ int main() {
         // auto scheduler = create_cpu_scheduler(&model->graph);
 
         // 方式3：创建GPU优先调度器（如果有GPU）
-        auto scheduler = create_gpu_scheduler(&model->graph);
+        auto scheduler = create_gpu_scheduler(graph);
 
         // 调度器会自动使用 DeviceManager 检测到的所有设备
         // 不需要手动添加设备！
