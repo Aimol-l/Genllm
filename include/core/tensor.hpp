@@ -11,8 +11,6 @@ constexpr int32_t TENSOR_MAX_SRC = 10;
 constexpr int32_t TENSOR_MAX_DIMS = 4;
 constexpr int32_t TENSOR_MAX_OP_PARAMS = 64;
 
-// 叶子节点通常是模型参数（权重）或输入数据，生命周期稳定
-// 非叶子节点就是临时变量，它们的生命周期仅限于单次推理
 struct Tensor{
     void* data = nullptr;       // 指向实际数据的指针，保证至少 8 字节对齐
     void* backend = nullptr;    // cpu or cuda or vulakn or .....
@@ -23,7 +21,7 @@ struct Tensor{
     enum OperationType op_type; // add,sub,mul,div.....
     std::array<int64_t, TENSOR_MAX_DIMS> dims = {0,0,0,0};      // 各维度大小,默认都是0
     std::array<uint64_t, TENSOR_MAX_DIMS> strides = {0,0,0,0};  // 各维度字节跨度
-    std::array<Tensor*, TENSOR_MAX_SRC> src;        // 源 tensor（用于计算图）
+    std::array<Tensor*, TENSOR_MAX_SRC> src;                    // 源 tensor（用于计算图）
     std::array<float, TENSOR_MAX_OP_PARAMS/sizeof(float)> op_params;  // 操作参数
 
     std::string name;

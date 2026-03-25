@@ -7,39 +7,7 @@
 #include <print>
 #include "utils/utils.hpp"
 
-// ==================== 设备描述 ====================
-
-struct Device {
-    Backend backend;
-    size_t device_id;
-    size_t total_memory;
-
-    std::string name;
-    
-
-    Device(Backend be, size_t id, size_t memory, const std::string& n = "")
-        : backend(be), device_id(id), total_memory(memory), name(n) {}
-
-    [[nodiscard]] std::string to_string() const {
-        return std::format("{}:{} ({} MB)",
-            backend_to_string(backend), device_id,
-            total_memory / (1024 * 1024));
-    }
-
-private:
-    [[nodiscard]] static const char* backend_to_string(Backend be) {
-        switch (be) {
-            case Backend::CPU:    return "CPU";
-            case Backend::CUDA:   return "CUDA";
-            case Backend::Vulkan: return "Vulkan";
-            case Backend::Sycl:   return "Sycl";
-            default:              return "Unknown";
-        }
-    }
-};
-
 // ==================== 后端提供者接口 ====================
-
 // 后端设备信息
 struct BackendDeviceInfo {
     Backend type;
@@ -60,7 +28,6 @@ public:
 };
 
 // ==================== 后端注册系统 ====================
-
 class BackendRegistry {
 private:
     BackendRegistry() = default;
@@ -87,7 +54,6 @@ public:
 };
 
 // ==================== 内置后端实现 ====================
-
 // CPU 后端（总是可用）
 class CPUBackendProvider : public BackendProvider {
 public:
@@ -101,18 +67,18 @@ public:
     }
 private:
     [[nodiscard]] static size_t get_system_memory() {
-#ifdef _WIN32
+    #ifdef _WIN32
         MEMORYSTATUSEX status;
         status.dwLength = sizeof(status);
         GlobalMemoryStatusEx(&status);
         return status.ullTotalPhys;
-#elif __linux__ || __APPLE__
+    #elif __linux__ || __APPLE__
         long pages = sysconf(_SC_PHYS_PAGES);
         long page_size = sysconf(_SC_PAGE_SIZE);
         return pages * page_size;
-#else
+    #else
         return 8ULL << 30;  // 默认 8GB
-#endif
+    #endif
     }
 };
 
@@ -126,22 +92,17 @@ public:
         int count = 0;
         return cudaGetDeviceCount(&count) == cudaSuccess && count > 0;
     }
-
     [[nodiscard]] int get_device_count() const override {
         int count = 0;
         cudaGetDeviceCount(&count);
         return count;
     }
-
     [[nodiscard]] BackendDeviceInfo get_device_info(int device_id) const override {
         cudaDeviceProp prop;
         cudaGetDeviceProperties(&prop, device_id);
-        return {Backend::CUDA, static_cast<size_t>(device_id),
-                prop.totalGlobalMem, prop.name};
+        return {Backend::CUDA, static_cast<size_t>(device_id),prop.totalGlobalMem, prop.name};
     }
-
     [[nodiscard]] Backend get_backend_type() const override { return Backend::CUDA; }
-
     [[nodiscard]] const char* get_backend_name() const override { return "CUDA"; }
 };
 #endif
@@ -154,15 +115,11 @@ public:
         // TODO: 实现 Vulkan 可用性检测
         return false;
     }
-
     [[nodiscard]] int get_device_count() const override { return 0; }
-
     [[nodiscard]] BackendDeviceInfo get_device_info(int device_id) const override {
         return {Backend::Vulkan, 0, 0, "Vulkan"};
     }
-
     [[nodiscard]] Backend get_backend_type() const override { return Backend::Vulkan; }
-
     [[nodiscard]] const char* get_backend_name() const override { return "Vulkan"; }
 };
 #endif
@@ -175,15 +132,11 @@ public:
         // TODO: 实现 Sycl 可用性检测
         return false;
     }
-
     [[nodiscard]] int get_device_count() const override { return 0; }
-
     [[nodiscard]] BackendDeviceInfo get_device_info(int device_id) const override {
         return {Backend::Sycl, 0, 0, "Sycl"};
     }
-
     [[nodiscard]] Backend get_backend_type() const override { return Backend::Sycl; }
-
     [[nodiscard]] const char* get_backend_name() const override { return "Sycl"; }
 };
 #endif
@@ -192,14 +145,11 @@ public:
 
 class DeviceManager {
 private:
-    std::vector<Device> devices_;
     bool initialized_ = false;
-
+    std::vector<BackendDeviceInfo> devices_;
     DeviceManager() = default;
-
     void detect_devices() {
         devices_.clear();
-
         auto& registry = BackendRegistry::instance();
         for (const auto& provider : registry.get_providers()) {
             int count = provider->get_device_count();
@@ -209,37 +159,30 @@ private:
                                       info.total_memory, info.name);
             }
         }
-
         initialized_ = true;
     }
-
 public:
     // 获取单例
     static DeviceManager& instance() {
         static DeviceManager manager;
         return manager;
     }
-
     // 禁止拷贝和移动
     DeviceManager(const DeviceManager&) = delete;
     DeviceManager& operator=(const DeviceManager&) = delete;
-
     // ==================== 设备查询 ====================
-
     // 获取所有设备（延迟初始化）
-    [[nodiscard]] const std::vector<Device>& get_devices() {
+    [[nodiscard]] const std::vector<BackendDeviceInfo>& get_devices() {
         if (!initialized_) {
             detect_devices();
         }
         return devices_;
     }
-
     [[nodiscard]] size_t device_count() {
         return get_devices().size();
     }
-
-    [[nodiscard]] std::vector<const Device*> get_devices_by_backend(Backend backend) {
-        std::vector<const Device*> result;
+    [[nodiscard]] std::vector<const BackendDeviceInfo*> get_devices_by_backend(Backend backend) {
+        std::vector<const BackendDeviceInfo*> result;
         for (const auto& dev : get_devices()) {
             if (dev.backend == backend) {
                 result.push_back(&dev);
@@ -247,7 +190,6 @@ public:
         }
         return result;
     }
-
     [[nodiscard]] const Device* get_cpu_device() {
         for (const auto& dev : get_devices()) {
             if (dev.backend == Backend::CPU) {
@@ -256,19 +198,14 @@ public:
         }
         return nullptr;
     }
-
     [[nodiscard]] bool has_backend(Backend backend) {
         return !get_devices_by_backend(backend).empty();
     }
-
-    // ==================== 调试信息 ====================
-
     void print_devices() {
         std::println("\n=== Available Devices ({}) ===", device_count());
         for (const auto& dev : get_devices()) {
             std::println("  {}", dev.to_string());
         }
-
         // 打印已注册后端
         auto& registry = BackendRegistry::instance();
         std::println("\nRegistered backends: {}", registry.get_providers().size());

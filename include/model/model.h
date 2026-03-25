@@ -9,7 +9,7 @@
 #include <memory>
 #include <algorithm>
 #include "tensor.hpp"
-#include "graph.h"
+#include "graph.hpp"
 #include "gguf_parser.h"
 #include "memory_manager.h"
 #include "utils/utils.hpp"

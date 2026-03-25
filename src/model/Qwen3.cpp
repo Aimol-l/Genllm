@@ -148,10 +148,8 @@ ComputeGraph& Qwen3Model::build_graph(const GGUFInfo& info){
     Tensor* final_norm = OpFactory::rms_norm(prev_output,output_norm_info,rms_norm_eps,"final_norm");
     Tensor* logits = OpFactory::linear(final_norm,embd_weight_info,true,"logits"); //{1, seq_len, vocab_size}
     // ========== Step 3: 从 logits 反向收集，构建 ComputeGraph ==========
-    this->graph_.clear();  // 确保干净
-    this->graph_.collect_from_root(logits, {input_ids, rope_cos, rope_sin});
-    this->graph_.set_input("input_ids", input_ids);
-    this->graph_.set_output("logits", logits);
+    this->graph_.clear(); // 不必回收Tensor.data,因为都还没有分配呢！
+    this->graph_.build_from_outputs({logits});
     return this->graph_;
 }
 

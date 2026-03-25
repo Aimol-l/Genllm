@@ -33,17 +33,7 @@ int main() {
         // ==================== 4. 创建调度器 ====================
         std::println("\n=== Step 4: Creating scheduler ===");
 
-        // 方式1：自动使用所有可用设备
-        // Scheduler scheduler(&model->graph);
-
-        // 方式2：创建CPU专用调度器
-        // auto scheduler = create_cpu_scheduler(&model->graph);
-
-        // 方式3：创建GPU优先调度器（如果有GPU）
-        auto scheduler = create_gpu_scheduler(graph);
-
-        // 调度器会自动使用 DeviceManager 检测到的所有设备
-        // 不需要手动添加设备！
+        Scheduler scheduler(&graph); // 需要
 
         // ==================== 5. 图切分 ====================
         std::println("\n=== Step 5: Partitioning graph ===");
