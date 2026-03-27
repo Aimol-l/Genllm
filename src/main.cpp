@@ -1,8 +1,8 @@
 #include <iostream>
-#include "graph.h"
+#include "graph.hpp"
 #include "scheduler.h"
 #include "executor.h"
-#include "backend.h"
+#include "backend/backend.h"
 #include "context.hpp"
 #include "memory.hpp"
 #include "gguf_parser.h"
@@ -11,41 +11,44 @@
 
 int main() {
     try {
-        // ==================== 0. 检测可用设备 ====================
-        std::println("=== Step 0: Detecting available devices ===");
+        // ==================== 0. 初始化后端 ====================
+        std::println("=== Step 0: Initializing backends ===");
+        backend::init_builtin_backends();
+
+        // ==================== 1. 检测可用设备 ====================
+        std::println("\n=== Step 1: Detecting available devices ===");
         print_available_devices();
 
-        // ==================== 1. 解析GGUF文件 ====================
-        std::println("\n=== Step 1: Parsing GGUF file ===");
+        // ==================== 2. 解析GGUF文件 ====================
+        std::println("\n=== Step 2: Parsing GGUF file ===");
         GGUFParser parser("models/Qwen3-0.6B-BF16.gguf");
         GGUFInfo info = parser.parse();
         info.print_info();
 
-        // ==================== 2. 创建模型 ====================
-        std::println("\n=== Step 2: Creating model ===");
+        // ==================== 3. 创建模型 ====================
+        std::println("\n=== Step 3: Creating model ===");
         auto model = ModelFactory::CreateFromGGUF(info);
         std::println("Created model: {}", model->name);
 
-        // ==================== 3. 构建计算图 ====================
-        std::println("\n=== Step 3: Building computation graph ===");
+        // ==================== 4. 构建计算图 ====================
+        std::println("\n=== Step 4: Building computation graph ===");
         ComputeGraph& graph = model->build_graph(info);
-        
-        // ==================== 4. 创建调度器 ====================
-        std::println("\n=== Step 4: Creating scheduler ===");
 
-        Scheduler scheduler(&graph); // 需要
+        // ==================== 5. 创建调度器 ====================
+        std::println("\n=== Step 5: Creating scheduler ===");
 
-        // ==================== 5. 图切分 ====================
-        std::println("\n=== Step 5: Partitioning graph ===");
-        scheduler.partition_graph();
-        scheduler.print_subgraphs();
+        GraphScheduler scheduler; // 需要
 
-        // ==================== 6. 内存估算 ====================
-        std::println("\n=== Step 6: Estimating memory ===");
+        // ==================== 6. 图切分 ====================
+        std::println("\n=== Step 6: Partitioning graph ===");
+        scheduler.graph_backend_assignment(graph,get_available_devices());
+
+        // ==================== 7. 内存估算 ====================
+        std::println("\n=== Step 7: Estimating memory ===");
         scheduler.print_memory_stats();
 
-        // ==================== 7. 构建执行计划 ====================
-        std::println("\n=== Step 7: Building execute order ===");
+        // ==================== 8. 构建执行计划 ====================
+        std::println("\n=== Step 8: Building execute order ===");
         scheduler.build_execute_order(graph_root);
         scheduler.optimize_execute_order();
         scheduler.print_execute_order();
@@ -53,8 +56,8 @@ int main() {
         // 导出调度计划（可选）
         // scheduler.export_schedule_dot("schedule.dot");
 
-        // ==================== 8. 创建内存池并分配权重内存 ====================
-        std::println("\n=== Step 8: Creating memory pools and allocating weights ===");
+        // ==================== 9. 创建内存池并分配权重内存 ====================
+        std::println("\n=== Step 9: Creating memory pools and allocating weights ===");
 
         // 获取调度器的内存管理器
         MemoryManager* mem_manager = scheduler.get_memory_manager();
@@ -62,14 +65,14 @@ int main() {
         // 为所有子图分配权重内存
         scheduler.allocate_all_weights();
 
-        // ==================== 9. 加载权重数据 ====================
-        std::println("\n=== Step 9: Loading weight data from GGUF ===");
+        // ==================== 10. 加载权重数据 ====================
+        std::println("\n=== Step 10: Loading weight data from GGUF ===");
 
         // 使用内存管理器加载权重（从 GGUF 文件读取数据到已分配的内存）
         model->load_weights(info, mem_manager);
 
-        // ==================== 10. 自回归推理 ====================
-        std::println("\n=== Step 10: Autoregressive inference ===");
+        // ==================== 11. 自回归推理 ====================
+        std::println("\n=== Step 11: Autoregressive inference ===");
 
         // 创建执行器
         Executor executor(&scheduler);

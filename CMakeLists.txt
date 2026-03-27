@@ -23,6 +23,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_DIR}/bin)
 
 include_directories(${PROJECT_DIR}/include)
 include_directories(${PROJECT_DIR}/include/core)
+include_directories(${PROJECT_DIR}/include/backend)
 
 
 add_executable(${THIS_PROJECT_NAME}  ${SRC_FILES})

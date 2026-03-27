@@ -6,17 +6,18 @@
 #include <print>
 #include <format>
 #include "memory.hpp"
-#include "backend.h"
+#include "backend/backend.h"
 #include "tensor.hpp"
 
 // 内存管理器：为每个设备管理独立的内存池
 class MemoryManager {
 private:
+    // eg： cuda --> pool(weights,activate,kv-cache)
     std::unordered_map<std::string, std::unique_ptr<MemoryPool>> m_pools;
     std::unordered_map<std::string, std::unique_ptr<IMemoryResource>> m_resources;
 
     // 为设备创建内存资源
-    IMemoryResource* create_memory_resource(const Device& device) {
+    IMemoryResource* create_memory_resource(const BackendInfo& device) {
         std::string key = get_device_key(device);
 
         if (m_resources.find(key) != m_resources.end()) {
@@ -52,7 +53,7 @@ private:
     }
 
     // 生成设备唯一键
-    static std::string get_device_key(const Device& device) {
+    static std::string get_device_key(const BackendInfo& device) {
         return std::format("{}:{}", static_cast<int>(device.backend), device.device_id);
     }
 
@@ -64,24 +65,21 @@ public:
     MemoryManager(const MemoryManager&) = delete;
     MemoryManager& operator=(const MemoryManager&) = delete;
 
-    // ==================== 内存池管理 ====================
-
     // 获取或创建设备的内存池
-    MemoryPool* get_or_create_pool(const Device& device, size_t chunk_size = 64ULL << 20) {
+    MemoryPool* get_or_create_pool(const BackendInfo& device, size_t chunk_size = 64ULL << 20) {
         std::string key = get_device_key(device);
 
         if (m_pools.find(key) == m_pools.end()) {
             IMemoryResource* resource = create_memory_resource(device);
             m_pools[key] = std::make_unique<MemoryPool>(resource, chunk_size);
-            std::println("Created memory pool for {} (chunk_size={} MB)",
-                device.to_string(), chunk_size / (1024 * 1024));
+            std::println("Created memory pool for {} (chunk_size={} MB)",device.to_string(), chunk_size / (1024 * 1024));
         }
 
         return m_pools[key].get();
     }
 
     // 获取设备的内存池
-    [[nodiscard]] MemoryPool* get_pool(const Device& device) const {
+    [[nodiscard]] MemoryPool* get_pool(const BackendInfo& device) const {
         std::string key = get_device_key(device);
         auto it = m_pools.find(key);
         return it != m_pools.end() ? it->second.get() : nullptr;
@@ -90,7 +88,7 @@ public:
     // ==================== 张量内存分配 ====================
 
     // 为张量分配内存
-    MemoryHandle allocate_tensor(Tensor* tensor, const Device& device) {
+    MemoryHandle allocate_tensor(Tensor* tensor, const BackendInfo& device) {
         if (!tensor) {
             throw std::runtime_error("Cannot allocate memory for null tensor");
         }
@@ -117,7 +115,7 @@ public:
     }
 
     // 为权重张量分配内存
-    MemoryHandle allocate_weight(Tensor* weight, const Device& device) {
+    MemoryHandle allocate_weight(Tensor* weight, const BackendInfo& device) {
         std::println("Allocating weight {} on {} ({} MB)",
             weight->name,
             device.to_string(),
@@ -127,7 +125,7 @@ public:
     }
 
     // 为临时张量分配内存
-    MemoryHandle allocate_temp(Tensor* tensor, const Device& device) {
+    MemoryHandle allocate_temp(Tensor* tensor, const BackendInfo& device) {
         return allocate_tensor(tensor, device);
     }
 

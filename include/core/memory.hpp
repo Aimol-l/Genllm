@@ -68,38 +68,32 @@ public:
     virtual MemoryProperty get_property() const = 0;
     virtual void* allocate(size_t size, size_t alignment) = 0;
 };
-
 // ==================== CPU 内存资源 ====================
-
 class CpuMemoryResource : public IMemoryResource {
 public:
     CpuMemoryResource() = default;
     ~CpuMemoryResource() override = default;
-
     void free(void* ptr) override {
         if (ptr) {
             std::free(ptr);
         }
     }
-
     int get_device_id() const override { return 0; }
     Backend get_backend() const override { return Backend::CPU; }
     MemoryProperty get_property() const override { return MemoryProperty::HOST_VISIBLE; }
 
     void* allocate(size_t size, size_t alignment) override {
         if (alignment < 8) alignment = 8;
-#ifdef _WIN32
+        #ifdef _WIN32
         return _aligned_malloc(size, alignment);
-#else
+        #else
         void* ptr = nullptr;
         posix_memalign(&ptr, alignment, size);
         return ptr;
-#endif
+        #endif
     }
 };
-
 // ==================== CUDA 内存资源 ====================
-
 #if GENLLM_HAS_CUDA
 
 class CudaMemoryResource : public IMemoryResource {
@@ -132,9 +126,7 @@ public:
 };
 
 #endif
-
 // ==================== 内存池 ====================
-
 class MemoryPool {
 protected:
     std::mutex m_mutex;
@@ -142,9 +134,7 @@ protected:
     size_t m_used_size;
     size_t m_chunk_size;
     IMemoryResource* m_resource;  // 不负责生命周期
-
     std::vector<void*> m_allocated_chunks;
-
 public:
     MemoryPool(IMemoryResource* resource, size_t chunk_size = 64ULL << 20)  // 默认 64MB
         : m_total_size(0)

@@ -270,3 +270,12 @@ inline std::string model_type_to_string(ModelType type) {
         default:                    return "Unknown";
     }
 }
+inline std::string backend_to_string(Backend backend) {
+    switch (backend) {
+        case Backend::CPU:    return "CPU";
+        case Backend::CUDA:   return "CUDA";
+        case Backend::Vulkan: return "Vulkan";
+        case Backend::Sycl:   return "Sycl";
+        default:              return "Unknown";
+    }
+}

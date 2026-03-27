@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <mutex>
 #include "tensor.hpp"
-#include "graph.h"
+#include "graph.hpp"
 #include "memory.h"
 
 constexpr size_t DEFAULT_TENSOR_ALIGNMENT = 8;
