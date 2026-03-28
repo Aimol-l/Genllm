@@ -43,16 +43,6 @@ int main() {
         std::println("\n=== Step 6: Partitioning graph ===");
         scheduler.graph_backend_assignment(graph,get_available_devices());
 
-        // ==================== 7. 内存估算 ====================
-        std::println("\n=== Step 7: Estimating memory ===");
-        scheduler.print_memory_stats();
-
-        // ==================== 8. 构建执行计划 ====================
-        std::println("\n=== Step 8: Building execute order ===");
-        scheduler.build_execute_order(graph_root);
-        scheduler.optimize_execute_order();
-        scheduler.print_execute_order();
-
         // 导出调度计划（可选）
         // scheduler.export_schedule_dot("schedule.dot");
 

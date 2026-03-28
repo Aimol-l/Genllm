@@ -1,4 +1,3 @@
-// memory_manager.h - 多设备内存管理器
 #pragma once
 #include <unordered_map>
 #include <memory>

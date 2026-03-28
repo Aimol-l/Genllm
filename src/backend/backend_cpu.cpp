@@ -1,15 +1,5 @@
 #include "backend/backend.h"
 
-// ==================== BackendInfo 实现 ====================
-
-std::string BackendInfo::to_string() const {
-    return std::format("[{}] {}: {} ({} MB)",
-        backend_to_string(backend),
-        device_id,
-        name,
-        total_memory / (1024 * 1024));
-}
-
 size_t BackendInfo::get_free_memory() const {
     // TODO: 实现获取可用内存的逻辑
     return total_memory;  // 暂时返回总内存

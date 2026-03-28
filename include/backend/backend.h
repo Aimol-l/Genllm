@@ -25,9 +25,7 @@ struct BackendInfo {
 
     // 构造函数
     BackendInfo() : backend(Backend::CPU), device_id(0), total_memory(0), name("Unknown") {}
-    BackendInfo(Backend b, size_t id, size_t mem, const std::string& n)
-        : backend(b), device_id(id), total_memory(mem), name(n) {}
-    std::string to_string() const;
+    BackendInfo(Backend b, size_t id, size_t mem, const std::string& n): backend(b), device_id(id), total_memory(mem), name(n) {}
     size_t get_free_memory() const;
 };
 
@@ -117,35 +115,25 @@ class DeviceManager {
 private:
     bool initialized_ = false;
     std::vector<BackendInfo> devices_;
-    DeviceManager() = default;
 
+    DeviceManager() = default;
     void detect_devices();
 public:
     static DeviceManager& instance();
     DeviceManager(const DeviceManager&) = delete;
     DeviceManager& operator=(const DeviceManager&) = delete;
-    [[nodiscard]] const std::vector<BackendInfo>& get_devices();
-    [[nodiscard]] size_t device_count();
-    [[nodiscard]] std::vector<const BackendInfo*> get_devices_by_backend(Backend backend);
-    [[nodiscard]] const BackendInfo* get_cpu_device();
-    [[nodiscard]] const BackendInfo* get_device(Backend backend, size_t device_id);
-    [[nodiscard]] bool has_backend(Backend backend);
-    [[nodiscard]] bool has_cuda();
-    [[nodiscard]] int get_cuda_device_count();
+
     void print_devices();
-    [[nodiscard]] std::string get_summary();
+    [[nodiscard]] size_t device_count();
+    [[nodiscard]] const std::vector<BackendInfo>& get_devices();
+    [[nodiscard]] const BackendInfo* get_device(Backend backend, size_t device_id);
 };
 
 // ==================== 便利函数 ====================
-inline bool has_cuda() {return device_manager().has_cuda();}
-inline DeviceManager& device_manager() {return DeviceManager::instance();}
 inline void print_available_devices() {device_manager().print_devices();}
-inline std::string get_device_summary() {return device_manager().get_summary();}
-inline const BackendInfo* get_cpu_device() {return device_manager().get_cpu_device();}
-inline bool has_backend(Backend backend) {return device_manager().has_backend(backend);}
+inline DeviceManager& device_manager() {return DeviceManager::instance();}
 inline const std::vector<BackendInfo>& get_available_devices() {return device_manager().get_devices();}
 inline const BackendInfo* get_device(Backend backend, size_t device_id) {return device_manager().get_device(backend, device_id);}
-inline std::vector<const BackendInfo*> get_devices_by_backend(Backend backend) {return device_manager().get_devices_by_backend(backend);}
 
 #define REGISTER_BACKEND(ProviderClass) \
     static struct ProviderClass##Registrar { \

@@ -43,26 +43,6 @@ const std::vector<BackendInfo>& DeviceManager::get_devices() {
 size_t DeviceManager::device_count() {
     return get_devices().size();
 }
-
-std::vector<const BackendInfo*> DeviceManager::get_devices_by_backend(Backend backend) {
-    std::vector<const BackendInfo*> result;
-    for (const auto& dev : get_devices()) {
-        if (dev.backend == backend) {
-            result.push_back(&dev);
-        }
-    }
-    return result;
-}
-
-const BackendInfo* DeviceManager::get_cpu_device() {
-    for (const auto& dev : get_devices()) {
-        if (dev.backend == Backend::CPU) {
-            return &dev;
-        }
-    }
-    return nullptr;
-}
-
 const BackendInfo* DeviceManager::get_device(Backend backend, size_t device_id) {
     for (const auto& dev : get_devices()) {
         if (dev.backend == backend && dev.device_id == device_id) {
@@ -72,52 +52,16 @@ const BackendInfo* DeviceManager::get_device(Backend backend, size_t device_id) 
     return nullptr;
 }
 
-bool DeviceManager::has_backend(Backend backend) {
-    return !get_devices_by_backend(backend).empty();
-}
-
-bool DeviceManager::has_cuda() {
-    return has_backend(Backend::CUDA);
-}
-
-int DeviceManager::get_cuda_device_count() {
-    return static_cast<int>(get_devices_by_backend(Backend::CUDA).size());
-}
-
 void DeviceManager::print_devices() {
-    std::println("\n=== Available Devices ({}) ===", device_count());
-    for (const auto& dev : get_devices()) {
-        std::println("  {}", dev.to_string());
-    }
-
     // 打印已注册后端
     auto& registry = BackendRegistry::instance();
-    std::println("\nRegistered backends: {}", registry.get_providers().size());
+    std::println("Registered backends: {}", registry.get_providers().size());
     for (const auto& provider : registry.get_providers()) {
         std::println("  {}: {} device(s)",
             provider->get_backend_name(),
             provider->get_device_count());
     }
 }
-
-std::string DeviceManager::get_summary() {
-    if (!initialized_) {
-        detect_devices();
-    }
-
-    std::string summary = "Devices: ";
-    bool first = true;
-    for (const auto& dev : devices_) {
-        if (!first) summary += ", ";
-        summary += std::format("{}[{}]({}MB)",
-            backend_to_string(dev.backend),
-            dev.device_id,
-            dev.total_memory / (1024 * 1024));
-        first = false;
-    }
-    return summary;
-}
-
 // ==================== 后端初始化 ====================
 
 namespace backend {
