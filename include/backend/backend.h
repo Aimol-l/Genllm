@@ -15,18 +15,37 @@
 #include "utils/utils.hpp"
 
 // ==================== 后端提供者接口 ====================
-
-// 后端设备信息
+// 设备能力描述
 struct BackendInfo {
-    Backend backend;
-    size_t device_id;
-    size_t total_memory;
-    std::string name;
+    size_t id;
+    Device device;              // CPU/CUDA_0/CUDA_1/SYCL/VULKAN...
+    size_t total_memory;        // 总内存/显存（字节）
+    size_t reserved_memory;     // 系统/框架预留（字节）
+    double compute_power;       // 相对算力（如 TFLOPS），用于负载均衡
+    double bandwidth;           // PCIe/NVLink 带宽（GB/s），用于拷贝估算
+    size_t available_memory() const {
+        return total_memory - reserved_memory;
+    }
+};
 
-    // 构造函数
-    BackendInfo() : backend(Backend::CPU), device_id(0), total_memory(0), name("Unknown") {}
-    BackendInfo(Backend b, size_t id, size_t mem, const std::string& n): backend(b), device_id(id), total_memory(mem), name(n) {}
-    size_t get_free_memory() const;
+// 算子特征（用于决策）
+struct OpFeature {
+    Tensor* tensor;             // 代表该算子的输出张量
+    OperationType op_type;
+    
+    // 计算特征
+    int64_t flops;              // 估算 FLOPs
+    int64_t bytes_read;         // 输入数据量（不含权重）
+    int64_t bytes_write;        // 输出数据量
+    int64_t weight_bytes;       // 权重大小
+    double compute_intensity;   // flops / (bytes_read + bytes_write)
+    
+    // 依赖特征
+    std::vector<Tensor*> input_tensors;
+    std::unordered_map<Device, size_t> input_bytes_on_device;  // 各设备上已有输入数据量
+    
+    // 设备偏好（可选）
+    Device preferred_device = Device::AUTO;
 };
 
 // 后端提供者：插件式接口
@@ -35,7 +54,7 @@ public:
     virtual ~BackendProvider() = default;
     [[nodiscard]] virtual bool is_available() const = 0;
     [[nodiscard]] virtual int get_device_count() const = 0;
-    [[nodiscard]] virtual Backend get_backend_type() const = 0;
+    [[nodiscard]] virtual Device get_backend_type() const = 0;
     [[nodiscard]] virtual const char* get_backend_name() const = 0;
     [[nodiscard]] virtual BackendInfo get_device_info(int device_id) const = 0;
 };
@@ -59,7 +78,7 @@ class CPUBackendProvider : public BackendProvider {
 public:
     [[nodiscard]] bool is_available() const override { return true; }
     [[nodiscard]] int get_device_count() const override { return 1; }
-    [[nodiscard]] Backend get_backend_type() const override { return Backend::CPU; }
+    [[nodiscard]] Device get_backend_type() const override { return Device::CPU; }
     [[nodiscard]] const char* get_backend_name() const override { return "CPU"; }
     [[nodiscard]] BackendInfo get_device_info(int device_id) const override;
 private:
@@ -126,14 +145,14 @@ public:
     void print_devices();
     [[nodiscard]] size_t device_count();
     [[nodiscard]] const std::vector<BackendInfo>& get_devices();
-    [[nodiscard]] const BackendInfo* get_device(Backend backend, size_t device_id);
+    [[nodiscard]] const BackendInfo* get_device(Device backend, size_t device_id);
 };
 
 // ==================== 便利函数 ====================
 inline void print_available_devices() {device_manager().print_devices();}
 inline DeviceManager& device_manager() {return DeviceManager::instance();}
 inline const std::vector<BackendInfo>& get_available_devices() {return device_manager().get_devices();}
-inline const BackendInfo* get_device(Backend backend, size_t device_id) {return device_manager().get_device(backend, device_id);}
+inline const BackendInfo* get_device(Device backend, size_t device_id) {return device_manager().get_device(backend, device_id);}
 
 #define REGISTER_BACKEND(ProviderClass) \
     static struct ProviderClass##Registrar { \

@@ -118,7 +118,7 @@ public:
             t->name = name;
             t->dtype = dtype;
             t->type = TensorType::TENSOR_TYPE_CACHE;
-            t->op_type = OperationType::OP_TYPE_NONE;
+            t->op_type = OperationType::OP_TYPE_ROPE_CACHE;
             // 形状: [max_seq_len, half_dim]
             t->dims[0] = max_seq_len;
             t->dims[1] = half_dim;

@@ -5,11 +5,12 @@
 #include <array>
 
 // 支持的后端设备
-enum class Backend: uint32_t{
-    CPU     = 0,
-    CUDA    = 1,
-    Vulkan  = 2,
-    Sycl    = 3
+enum class Device: uint8_t {
+    CPU = 0,
+    CUDA = 1,
+    SYCL = 3,
+    VULKAN = 4,
+    AUTO = 255
 };
 enum class TensorType : uint8_t {
     TENSOR_TYPE_UNKNOWN = 0,              // 未初始化或无效
@@ -77,6 +78,7 @@ enum class GGUFType : uint8_t {
 };
 enum class OperationType:uint8_t {
     OP_TYPE_NONE         ,
+    OP_TYPE_MEMCPY       ,
     OP_TYPE_DUP          ,
     OP_TYPE_ADD          ,
     OP_TYPE_SUB          ,
@@ -106,7 +108,12 @@ enum class OperationType:uint8_t {
     OP_TYPE_EMBEDDING    ,
     OP_TYPE_LINEAR       ,
     OP_TYPE_APPLY_ROPE   ,
-    OP_TYPE_SDPA
+    OP_TYPE_SDPA,
+    OP_TYPE_TOKENIZE,
+    OP_TYPE_SAMPLING,
+    OP_TYPE_ROPE_CACHE,
+    OP_TYPE_CONV2D,
+    OP_TYPE_FLASH_ATTN
 };
 // 模型类型
 enum class ModelType:uint8_t {
@@ -270,12 +277,13 @@ inline std::string model_type_to_string(ModelType type) {
         default:                    return "Unknown";
     }
 }
-inline std::string backend_to_string(Backend backend) {
-    switch (backend) {
-        case Backend::CPU:    return "CPU";
-        case Backend::CUDA:   return "CUDA";
-        case Backend::Vulkan: return "Vulkan";
-        case Backend::Sycl:   return "Sycl";
-        default:              return "Unknown";
+inline std::string device_to_string(Device dev) {
+    switch (dev) {
+        case Device::CPU: return "CPU";
+        case Device::CUDA: return "CUDA";
+        case Device::SYCL: return "SYCL";
+        case Device::VULKAN: return "VULKAN";
+        case Device::AUTO: return "AUTO";
+        default: return "UNKNOWN";
     }
 }

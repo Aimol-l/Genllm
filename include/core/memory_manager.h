@@ -25,8 +25,8 @@ private:
 
         IMemoryResource* resource = nullptr;
 
-        switch (device.backend) {
-            case Backend::CPU:
+        switch (device.device) {
+            case Device::CPU:
                 resource = new CpuMemoryResource();
                 break;
 
@@ -53,7 +53,7 @@ private:
 
     // 生成设备唯一键
     static std::string get_device_key(const BackendInfo& device) {
-        return std::format("{}:{}", static_cast<int>(device.backend), device.device_id);
+        return std::format("{}:{}", static_cast<int>(device.device), device.id);
     }
 
 public:

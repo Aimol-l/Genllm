@@ -15,39 +15,70 @@
 #include "utils/utils.hpp"
 
 class ComputeGraph {
-private:
-    std::vector<Tensor*> all_tensors_;      // 所有相关张量
-    std::vector<Tensor*> execution_order_;  // 拓扑序（仅计算节点）
+private: 
+    std::vector<Tensor*> all_tensors_;          // 所有张量
+    std::vector<Tensor*> execution_order_;      // 拓扑排序后的计算张量
+    std::vector<Tensor*> external_outputs_;     // 外部可见的输出张量
 public:
-    // 多输出逆向构建（只负责收集节点 + 拓扑排序）
-    void build_from_outputs(std::initializer_list<Tensor*> outputs) {
-        for (Tensor* out : outputs) {
-            if (out) this->collect_tensors(out);
-        }
-        this->topological_sort();  // 生成纯依赖序，不含设备信息
-    }
-    // 获取拓扑序（供调度器使用）
-    const std::vector<Tensor*>& get_execution_order() const {
-        return execution_order_;
-    }
-    // 获取所有张量（供权重预加载使用）
-    const std::vector<Tensor*>& get_all_tensors() const {
-        return all_tensors_;
-    }
     void clear(){
         all_tensors_.clear();
         execution_order_.clear();
+        external_outputs_.clear();
     }
+    // 从输出张量逆向构建计算图
+    void build_from_outputs(std::initializer_list<Tensor*> outputs) {
+        for (Tensor* out : outputs) {
+            if (out) {
+                external_outputs_.push_back(out);
+                collect_tensors(out);
+            }
+        }
+        topological_sort();
+        std::println("ComputeGraph built: {} tensors, {} compute ops", all_tensors_.size(), execution_order_.size());
+    }
+    // 单输出兼容接口
+    void build_from_output(Tensor* output) {
+        build_from_outputs({output});
+    }
+    
+    const std::vector<Tensor*>& get_all_tensors() const { return all_tensors_; }
+    const std::vector<Tensor*>& get_execution_order() const { return execution_order_; }
+    const std::vector<Tensor*>& get_external_outputs() const { return external_outputs_; }
+    
+    // 替换输出指针（用于 D2H 拷贝后）
+    void replace_output(Tensor* old_out, Tensor* new_out) {
+        for (auto& out : external_outputs_) {
+            if (out == old_out) {
+                out = new_out;
+                break;
+            }
+        }
+    }
+    
+    // 获取总层数（用于调度器）
+    int get_total_layers() const {
+        int max_layer = -1;
+        for (Tensor* t : all_tensors_) {
+            int layer = parse_layer_from_name(t->name);
+            if (layer >= 0) max_layer = std::max(max_layer, layer);
+        }
+        return max_layer + 1;
+    }
+
 private:
-    // 逆向收集所有 Tensor（BFS + 去重）
+    // 逆向收集所有相关张量（BFS + 去重）
     void collect_tensors(Tensor* output) {
         std::queue<Tensor*> q;
         std::unordered_set<Tensor*> visited;
+        
         q.push(output);
         visited.insert(output);
+        
         while (!q.empty()) {
             Tensor* t = q.front(); q.pop();
             all_tensors_.push_back(t);
+            
+            // 遍历输入源
             for (int i = 0; i < TENSOR_MAX_SRC; ++i) {
                 Tensor* src = t->src[i];
                 if (src && !visited.count(src)) {
@@ -57,27 +88,32 @@ private:
             }
         }
     }
-    // Kahn 算法：对"计算产生的张量"排序
+    // Kahn 算法拓扑排序
     void topological_sort() {
-        // 入度 = 有多少个"计算张量"依赖当前张量作为输入
+        // 构建依赖图：计算张量之间的依赖
         std::unordered_map<Tensor*, int> in_degree;
         std::unordered_map<Tensor*, std::vector<Tensor*>> dependents;
+        
         for (Tensor* t : all_tensors_) {
-            if (!is_computed_tensor(t)) continue;
+            if (!t->is_computed()) continue;
             
             in_degree[t] = 0;
             for (int i = 0; i < TENSOR_MAX_SRC; ++i) {
                 Tensor* src = t->src[i];
-                if (src && is_computed_tensor(src)) {
+                if (src && src->is_computed()) {
                     dependents[src].push_back(t);
                     in_degree[t]++;
                 }
             }
         }
+        
+        // 入度为 0 的节点入队
         std::queue<Tensor*> q;
         for (auto& [t, deg] : in_degree) {
             if (deg == 0) q.push(t);
         }
+        
+        // BFS 排序
         while (!q.empty()) {
             Tensor* cur = q.front(); q.pop();
             execution_order_.push_back(cur);
@@ -88,10 +124,25 @@ private:
                 }
             }
         }
+        
+        // 检查环
+        if (execution_order_.size() != in_degree.size()) {
+            throw std::runtime_error("ComputeGraph has cycle!");
+        }
     }
-    bool is_computed_tensor(Tensor* t) {
-        return t && t->op_type != OperationType::OP_TYPE_NONE 
-            && t->type != TensorType::TENSOR_TYPE_WEIGHT 
-            && t->type != TensorType::TENSOR_TYPE_INPUT;
+    // 从张量名解析层号（如 "blk.5.attn_q.weight" → 5）
+    int parse_layer_from_name(const std::string& name) const {
+        auto pos = name.find("blk.");
+        if (pos != std::string::npos) {
+            auto start = pos + 4;
+            auto end = name.find('.', start);
+            if (end != std::string::npos) {
+                try {
+                    return std::stoi(name.substr(start, end - start));
+                } catch (...) {}
+            }
+        }
+        return -1;
     }
+
 };

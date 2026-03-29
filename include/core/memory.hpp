@@ -64,7 +64,7 @@ public:
     virtual ~IMemoryResource() = default;
     virtual void free(void* ptr) = 0;
     virtual int get_device_id() const = 0;
-    virtual Backend get_backend() const = 0;
+    virtual Device get_backend() const = 0;
     virtual MemoryProperty get_property() const = 0;
     virtual void* allocate(size_t size, size_t alignment) = 0;
 };
@@ -79,7 +79,7 @@ public:
         }
     }
     int get_device_id() const override { return 0; }
-    Backend get_backend() const override { return Backend::CPU; }
+    Device get_backend() const override { return Device::CPU; }
     MemoryProperty get_property() const override { return MemoryProperty::HOST_VISIBLE; }
 
     void* allocate(size_t size, size_t alignment) override {
@@ -207,8 +207,8 @@ public:
         return m_resource;
     }
 
-    [[nodiscard]] Backend get_backend() const {
-        return m_resource ? m_resource->get_backend() : Backend::CPU;
+    [[nodiscard]] Device get_backend() const {
+        return m_resource ? m_resource->get_backend() : Device::CPU;
     }
 
     [[nodiscard]] int get_device_id() const {
