@@ -11,11 +11,10 @@
 // 内存管理器：为每个设备管理独立的内存池
 class MemoryManager {
 private:
-    // eg： cuda --> pool(weights,activate,kv-cache)
+    // eg： cpu --> pool(weights,activate,kv-cache)
+    // eg： cuda0 --> pool(weights,activate,kv-cache)
+    // eg： cuda1 --> pool(weights,activate,kv-cache)
     std::unordered_map<std::string, std::unique_ptr<MemoryPool>> m_pools;
-    std::unordered_map<std::string, std::unique_ptr<IMemoryResource>> m_resources;
-
-    // 为设备创建内存资源
     IMemoryResource* create_memory_resource(const BackendInfo& device) {
         std::string key = get_device_key(device);
 
@@ -50,12 +49,9 @@ private:
         m_resources[key] = std::unique_ptr<IMemoryResource>(resource);
         return resource;
     }
-
-    // 生成设备唯一键
     static std::string get_device_key(const BackendInfo& device) {
         return std::format("{}:{}", static_cast<int>(device.device), device.id);
     }
-
 public:
     MemoryManager() = default;
     ~MemoryManager() = default;
@@ -63,8 +59,6 @@ public:
     // 禁止拷贝
     MemoryManager(const MemoryManager&) = delete;
     MemoryManager& operator=(const MemoryManager&) = delete;
-
-    // 获取或创建设备的内存池
     MemoryPool* get_or_create_pool(const BackendInfo& device, size_t chunk_size = 64ULL << 20) {
         std::string key = get_device_key(device);
 
@@ -76,17 +70,11 @@ public:
 
         return m_pools[key].get();
     }
-
-    // 获取设备的内存池
     [[nodiscard]] MemoryPool* get_pool(const BackendInfo& device) const {
         std::string key = get_device_key(device);
         auto it = m_pools.find(key);
         return it != m_pools.end() ? it->second.get() : nullptr;
     }
-
-    // ==================== 张量内存分配 ====================
-
-    // 为张量分配内存
     MemoryHandle allocate_tensor(Tensor* tensor, const BackendInfo& device) {
         if (!tensor) {
             throw std::runtime_error("Cannot allocate memory for null tensor");
@@ -112,8 +100,6 @@ public:
 
         return handle;
     }
-
-    // 为权重张量分配内存
     MemoryHandle allocate_weight(Tensor* weight, const BackendInfo& device) {
         std::println("Allocating weight {} on {} ({} MB)",
             weight->name,
@@ -122,15 +108,9 @@ public:
 
         return allocate_tensor(weight, device);
     }
-
-    // 为临时张量分配内存
     MemoryHandle allocate_temp(Tensor* tensor, const BackendInfo& device) {
         return allocate_tensor(tensor, device);
     }
-
-    // ==================== 工具函数 ====================
-
-    // 计算张量大小（MB）
     static double get_tensor_size_mb(const Tensor* tensor) {
         if (!tensor) return 0.0;
 
@@ -142,8 +122,6 @@ public:
         size_t size_bytes = num_elements * data_type_size(tensor->dtype);
         return static_cast<double>(size_bytes) / (1024.0 * 1024.0);
     }
-
-    // 计算张量大小（字节）
     static size_t get_tensor_size_bytes(const Tensor* tensor) {
         if (!tensor) return 0;
 
@@ -154,10 +132,6 @@ public:
 
         return num_elements * data_type_size(tensor->dtype);
     }
-
-    // ==================== 统计信息 ====================
-
-    // 打印内存统计
     void print_stats() const {
         std::println("\n=== Memory Pool Statistics ===");
 
@@ -171,8 +145,6 @@ public:
 
         std::println("Total: {} MB allocated", total_allocated / (1024 * 1024));
     }
-
-    // 获取总内存使用量
     [[nodiscard]] size_t get_total_memory_used() const {
         size_t total = 0;
         for (const auto& [key, pool] : m_pools) {
@@ -180,8 +152,6 @@ public:
         }
         return total;
     }
-
-    // 清理所有内存池
     void clear() {
         m_pools.clear();
         m_resources.clear();

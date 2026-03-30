@@ -11,7 +11,7 @@
 #include "tensor.hpp"
 #include "graph.hpp"
 #include "gguf_parser.h"
-#include "memory_manager.h"
+#include "core/mmanager.h"
 #include "utils/utils.hpp"
 
 

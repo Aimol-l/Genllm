@@ -21,10 +21,12 @@ int main() {
         std::println("Created model: {}", model->name);
 
         ComputeGraph& graph = model->build_graph(info);
+
         GraphScheduler::Config config;
         config.weight_comm = 5.0;      // 高通信权重避免 Ping-pong
         config.weight_balance = 0.5;   // 低负载均衡避免过度分散
         GraphScheduler scheduler(config);
+        
         scheduler.schedule(graph, get_available_devices());
 
         // 获取调度器的内存管理器

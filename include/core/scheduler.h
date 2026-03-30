@@ -1,6 +1,6 @@
 #pragma once
 #include "graph.hpp"
-#include "memory.hpp"
+#include "mmanger.h"
 #include <unordered_map>
 #include <algorithm>
 #include <memory>
@@ -29,8 +29,7 @@ public:
     void schedule(ComputeGraph& graph, const std::vector<BackendInfo>& devices);
 private:
     Config config_;
-    std::unordered_map<Device, std::unique_ptr<MemoryPool>> pools_;
-
+    std::unique_ptr<MemoryManager> mmanger_;
     struct DeviceState {
         struct Stats {
             size_t used_memory = 0;
