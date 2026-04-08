@@ -1,78 +1,71 @@
 #pragma once
-#include "graph.hpp"
-#include "mmanger.h"
-#include <unordered_map>
-#include <algorithm>
 #include <memory>
-#include <print>
+#include <vector>
+#include "graph.hpp"
+#include "backend/backend.h"
+#include "utils/utils.hpp"
+#include "core/manager.hpp"
 
 class GraphScheduler {
 public:
-    // ========== 配置结构 ==========
     struct Config {
-        // 评分权重
-        double weight_compute = 1.0;
-        double weight_comm = 5.0;       // 通信开销权重（调高避免 Ping-pong）
-        double weight_memory = 3.0;
-        double weight_balance = 0.5;    // 负载均衡权重（调低避免过度分散）
-        double compute_intensity_threshold = 50.0;  // 计算密度阈值
-        size_t small_tensor_threshold = 10 * 1024 * 1024;  // 10MB，小张量避免拷贝惩罚
-        std::unordered_set<OperationType> cpu_only_ops = {
-            OperationType::OP_TYPE_TOKENIZE,
-            OperationType::OP_TYPE_EMBEDDING,
-            OperationType::OP_TYPE_ROPE_CACHE,
-            OperationType::OP_TYPE_SAMPLING
-        };
+        double memory_headroom;
+        size_t kv_cache_per_layer;
+        size_t activation_pool_factor;
+        Config(double head = 0.1, size_t kv = 0, size_t act_factor = 2)
+            : memory_headroom(head), kv_cache_per_layer(kv), activation_pool_factor(act_factor) {}
     };
-    MemoryPool* get_pool(Device dev);
-    GraphScheduler(Config cfg = {}) : config_(cfg) {}
-    void schedule(ComputeGraph& graph, const std::vector<BackendInfo>& devices);
+    struct LayerCost {
+        int layer_id = -1;
+        size_t weight_bytes = 0;
+        size_t activation_bytes = 0;
+        size_t kv_cache_bytes = 0;
+        size_t total() const { return weight_bytes + activation_bytes + kv_cache_bytes; }
+    };
+    struct LayerAssignment {
+        int start_layer = 0;
+        int end_layer = 0;
+        Device device = Device::CPU;
+        size_t total_bytes = 0;
+        size_t weight_bytes = 0;
+        size_t activation_bytes = 0;
+        LayerAssignment() = default;
+        LayerAssignment(int s, int e, Device d, size_t b, size_t w, size_t a)
+            : start_layer(s), end_layer(e), device(d),
+              total_bytes(b), weight_bytes(w), activation_bytes(a) {}
+    };
+    explicit GraphScheduler(ComputeGraph cg, Config cfg = {})
+        : graph_(std::move(cg)), config_(cfg) {
+        memory_ = std::make_unique<MemoryManager>();
+    }
+
+    void schedule(const std::vector<BackendInfo>& devices);
+    const std::vector<LayerAssignment>& get_assignments() const { return assignments_; }
+    std::unique_ptr<MemoryManager>& memory() { return memory_; }
+    const std::unique_ptr<MemoryManager>& memory() const { return memory_; }
+    void export_dot(const std::string& path) const { graph_.export_dot(path); }
+
 private:
     Config config_;
-    std::unique_ptr<MemoryManager> mmanger_;
-    struct DeviceState {
-        struct Stats {
-            size_t used_memory = 0;
-            int64_t assigned_flops = 0;
-            int assigned_ops = 0;
-        };
-        std::unordered_map<Device, BackendInfo> info;
-        std::unordered_map<Device, Stats> stats;
-        size_t available_memory(Device dev) const {
-            auto it = info.find(dev);
-            auto sit = stats.find(dev);
-            if (it == info.end() || sit == stats.end()) return 0;
-            return it->second.available_memory() - sit->second.used_memory;
-        }
-    };
-    struct OpFeature {
-        Tensor* tensor = nullptr;
-        OperationType op_type = OperationType::OP_TYPE_NONE;
-        int64_t flops = 0;
-        int64_t bytes_read = 0;
-        int64_t bytes_write = 0;
-        int64_t weight_bytes = 0;
-        double compute_intensity = 0.0;
-        std::vector<Tensor*> input_tensors;
-        Device preferred_device = Device::AUTO;
-    };
-    
-    int64_t estimate_flops(Tensor* t) const;
-    void allocate_memory(ComputeGraph& graph);
-    size_t required_memory(const OpFeature& op) const;
-    void print_statistics(const DeviceState& dev_state);
-    void init_memory_pools(const std::vector<BackendInfo>& devices);
-    DeviceState init_device_state(const std::vector<BackendInfo>& devices);
-    Tensor* create_memcpy_proxy(Tensor* src, Device dst_dev, DeviceState& dev_state);
-    Device find_less_loaded_device(const DeviceState& dev_state, const OpFeature& op);
-    std::unordered_map<Tensor*, OpFeature> extract_op_features(const ComputeGraph& graph);
-    void assign_to_device(Tensor* t, Device dev, const OpFeature& op, DeviceState& dev_state);
-    void migrate_op(Tensor* t, Device old_dev, Device new_dev,DeviceState& dev_state, OpFeature& op);
-    void assign_cpu_only_ops(const std::unordered_map<Tensor*, OpFeature>& features,DeviceState& dev_state);
-    void greedy_assign(OpFeature& op, DeviceState& dev_state,const std::unordered_map<Tensor*, OpFeature>& all_features);
-    void insert_copy_edges(ComputeGraph& graph, std::unordered_map<Tensor*, OpFeature>& features,DeviceState& dev_state);
-    bool validate_and_rebalance(ComputeGraph& graph, DeviceState& dev_state,std::unordered_map<Tensor*, OpFeature>& features);
-    void rebalance_to_less_loaded(ComputeGraph& graph, DeviceState& dev_state,std::unordered_map<Tensor*, OpFeature>& features);
-    void finalize_external_outputs(ComputeGraph& graph, DeviceState& dev_state,std::unordered_map<Tensor*, OpFeature>& features) ;
-    double compute_score(const OpFeature& op, Device dev, const DeviceState& dev_state,const std::unordered_map<Tensor*, OpFeature>& all_features);
+    ComputeGraph graph_;
+    std::unique_ptr<MemoryManager> memory_;
+    std::vector<LayerAssignment> assignments_;
+
+    void assign_global_nodes(ComputeGraph& graph, Device cpu) const;
+    void unify_weight_devices(ComputeGraph& graph) const;
+    std::vector<LayerCost> estimate_layer_costs(const ComputeGraph& graph) const;
+    void apply_assignment(ComputeGraph& graph, const std::vector<LayerAssignment>& assignments) const;
+    std::vector<LayerAssignment> assign_layers(const std::vector<LayerCost>& costs,const std::vector<BackendInfo>& devices) const;
+
+
+    void insert_copy_edges(ComputeGraph& graph) const;
+    void create_memory_pools(const ComputeGraph& graph, const std::vector<BackendInfo>& devices);
+    void print_summary(const std::vector<LayerCost>& costs, const std::vector<BackendInfo>& devices) const;
+
+    static std::string format_bytes(size_t bytes) {
+        if (bytes >= 1ULL << 30) return std::format("{:.1f} GB", static_cast<double>(bytes) / (1ULL << 30));
+        if (bytes >= 1ULL << 20) return std::format("{:.1f} MB", static_cast<double>(bytes) / (1ULL << 20));
+        if (bytes >= 1ULL << 10) return std::format("{:.1f} KB", static_cast<double>(bytes) / (1ULL << 10));
+        return std::format("{} B", bytes);
+    }
 };

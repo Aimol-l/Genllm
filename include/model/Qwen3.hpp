@@ -1,10 +1,12 @@
 #pragma once
 
 #include "model/model.h"
+#include <cstddef>
 
 
 struct Qwen3Params{
-    float padding = 0.2;
+    size_t top_p = 10;
+    float templature = 0.8;
 };
 
 // Qwen3 模型类
@@ -31,7 +33,9 @@ public:
         arch = ModelArch::QWEN3;
     }
 
-    ~Qwen3Model() override = default;
+    ~Qwen3Model(){
+        // todo...
+    }
 
     // 禁止拷贝，允许移动
     Qwen3Model(const Qwen3Model&) = delete;
@@ -44,5 +48,5 @@ public:
     ComputeGraph& build_graph(const GGUFInfo& info) override;
 
     // 加载权重（使用内存管理器）
-    void load_weights(GGUFInfo& info, MemoryManager* mem_manager) override;
+    // void load_weights(GGUFInfo& info, MemoryManager* mem_manager) override;
 };

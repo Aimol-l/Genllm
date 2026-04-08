@@ -1,38 +1,36 @@
 #include "backend/backend.h"
+#include <fstream>
+#include <unordered_set>
 
-size_t BackendInfo::get_free_memory() const {
-    // TODO: 实现获取可用内存的逻辑
-    return total_memory;  // 暂时返回总内存
-}
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
-// ==================== CPU 后端实现 ====================
-
-BackendInfo CPUBackendProvider::get_device_info(int device_id) const {
+BackendInfo CPUBackendProvider::get_backend_info(int device_id) const {
     size_t memory = get_system_memory();
-    return BackendInfo(Backend::CPU, 0, memory, get_cpu_name());
+    return BackendInfo{0, Device::CPU, memory, 2ULL << 30, 20, 0};
 }
 
 size_t CPUBackendProvider::get_system_memory() {
-#if defined(_WIN32)
-    MEMORYSTATUSEX status;
-    status.dwLength = sizeof(status);
-    GlobalMemoryStatusEx(&status);
-    return static_cast<size_t>(status.ullTotalPhys);
-#elif defined(__linux__) || defined(__APPLE__)
-    long pages = sysconf(_SC_PHYS_PAGES);
-    long page_size = sysconf(_SC_PAGE_SIZE);
-    if (pages > 0 && page_size > 0) {
-        return static_cast<size_t>(pages) * static_cast<size_t>(page_size);
-    }
-    return 8ULL << 30;  // 默认 8GB
-#else
-    return 8ULL << 30;  // 默认 8GB
-#endif
+    #if defined(_WIN32)
+        MEMORYSTATUSEX status;
+        status.dwLength = sizeof(status);
+        GlobalMemoryStatusEx(&status);
+        return static_cast<size_t>(status.ullTotalPhys);
+    #elif defined(__linux__) || defined(__APPLE__)
+        long pages = sysconf(_SC_PHYS_PAGES);
+        long page_size = sysconf(_SC_PAGE_SIZE);
+        if (pages > 0 && page_size > 0) {
+            return static_cast<size_t>(pages) * static_cast<size_t>(page_size);
+        }
+        return 8ULL << 30;
+    #else
+        return 8ULL << 30;
+    #endif
 }
 
 std::string CPUBackendProvider::get_cpu_name() {
 #if defined(_WIN32)
-    // Windows: 使用注册表获取 CPU 名称
     HKEY hKey;
     char cpuName[256] = "Unknown CPU";
     DWORD size = sizeof(cpuName);
@@ -45,7 +43,6 @@ std::string CPUBackendProvider::get_cpu_name() {
     }
     return cpuName;
 #elif defined(__linux__)
-    // Linux: 从 /proc/cpuinfo 读取
     std::ifstream cpuinfo("/proc/cpuinfo");
     std::string line;
     while (std::getline(cpuinfo, line)) {
@@ -58,7 +55,6 @@ std::string CPUBackendProvider::get_cpu_name() {
     }
     return "Unknown CPU";
 #elif defined(__APPLE__)
-    // macOS: 使用 sysctl
     char cpuName[256];
     size_t len = sizeof(cpuName);
     if (sysctlbyname("machdep.cpu.brand_string", cpuName, &len, NULL, 0) == 0) {
@@ -69,3 +65,61 @@ std::string CPUBackendProvider::get_cpu_name() {
     return "Unknown CPU";
 #endif
 }
+
+unsigned int CPUBackendProvider::get_thread_count() {
+#if defined(_WIN32)
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwNumberOfProcessors;
+#elif defined(__linux__) || defined(__APPLE__)
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? static_cast<unsigned int>(n) : 1;
+#else
+    return 1;
+#endif
+}
+
+unsigned int CPUBackendProvider::get_physical_cores() {
+#if defined(__linux__)
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    std::unordered_set<std::string> cores;
+    std::string line;
+    while (std::getline(cpuinfo, line)) {
+        if (line.find("core id") == 0) {
+            size_t pos = line.find(':');
+            if (pos != std::string::npos) {
+                cores.insert(line.substr(pos + 2));
+            }
+        }
+    }
+    return cores.empty() ? get_thread_count() : static_cast<unsigned int>(cores.size());
+#elif defined(__APPLE__)
+    return get_thread_count();
+#elif defined(_WIN32)
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    DWORD length = 0;
+    GetLogicalProcessorInformation(NULL, &length);
+    if (length == 0) return si.dwNumberOfProcessors;
+    auto buffer = std::make_unique<char[]>(length);
+    auto info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION*>(buffer.get());
+    if (!GetLogicalProcessorInformation(info, &length)) return si.dwNumberOfProcessors;
+    unsigned int count = 0;
+    size_t offset = 0;
+    while (offset + sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION) <= length) {
+        if (info->Relationship == RelationProcessorCore) count++;
+        offset += sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+        info++;
+    }
+    return count > 0 ? count : si.dwNumberOfProcessors;
+#else
+    return 1;
+#endif
+}
+
+
+static struct CPUBackendProviderRegistrar {
+    CPUBackendProviderRegistrar() {
+        BackendRegistry::instance().register_provider(std::make_unique<CPUBackendProvider>());
+    }
+} g_cpu_backend_registrar;

@@ -1,5 +1,7 @@
 #pragma once
+#include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include "core/tensor.hpp"
 #include "core/gguf_parser.h"
@@ -16,7 +18,8 @@ public:
         DataType dtype,
         TensorType type, 
         std::initializer_list<int64_t> dims, 
-        const std::string& name
+        const std::string& name,
+        int32_t layer_id = -1
     ){
         if(dims.size()>4){
             throw std::runtime_error("dims size must 1~4");
@@ -25,6 +28,7 @@ public:
         t->name = name;
         t->dtype = dtype;
         t->type = type;
+        t->layer_id = layer_id;
         t->op_type = OperationType::OP_TYPE_NONE;
         std::copy(dims.begin(), dims.end(), t->dims.begin());
         OpFactory::compute_strides(t);
@@ -32,43 +36,53 @@ public:
         return t;
     }
     // 静态权重占位符 (从 GGUF 加载，data=nullptr，执行前绑定)
-    static Tensor* weight_placeholder(const TensorInfo* info, const std::string& name){
+    static Tensor* weight_placeholder(const TensorInfo* info, const std::string& name, int32_t layer_id = -1){
         Tensor* t = new Tensor();
         t->name = name;
+        t->layer_id = layer_id;
         t->dtype = info->dtype;
         t->type = TensorType::TENSOR_TYPE_WEIGHT;
         t->op_type = OperationType::OP_TYPE_NONE;
+        t->offset = info->offset;
         std::copy(info->dimensions.begin(), info->dimensions.end(), t->dims.begin());
         OpFactory::compute_strides(t);
-        t->data = nullptr;  // 等待外部绑定
+        t->data = nullptr;
         return t;
     }
     // ──────────────────────────────────────────────────────────────────
     // linear: y = x @ weight.T
     // ──────────────────────────────────────────────────────────────────
-    static Tensor* linear(Tensor* input, const TensorInfo* weight_info,bool transpose = false,const std::string& name = ""){
+    static Tensor* linear(
+        Tensor* input, 
+        const TensorInfo* weight_info,
+        bool transpose = false,
+        const std::string& name = "",
+        int32_t layer_id = -1
+    ){
         Tensor* t = new Tensor();
         t->name = name;
+        t->layer_id = layer_id;
         t->type = TensorType::TENSOR_TYPE_ACTIVATION;
-        t->dtype = input->dtype;  // 输出 dtype 同输入
+        t->dtype = input->dtype;
         t->op_type = OperationType::OP_TYPE_LINEAR;
         auto out_dims = infer_linear_output(
-            {input->dims.begin(), input->dims.end()},
+            {input->dims.begin(), input->dims.end()},  // 传整个数组
             weight_info->dimensions,
             transpose
         );
         std::copy(out_dims.begin(), out_dims.end(), t->dims.begin());
-        // 双输入: [0]=dynamic input, [1]=static weight
         t->src[0] = input;
-        t->src[1] = weight_placeholder(weight_info, weight_info->name);
-        OpFactory::compute_strides(t);
+        t->src[1] = weight_placeholder(weight_info, weight_info->name,layer_id);
+        t->op_params[0] = transpose ? 1 : 0;  // 转置标志
+        compute_strides(t);
         return t;
     }
 
     static Tensor* embedding_lookup(
         Tensor* input_ids,
         const TensorInfo* weight_info,
-        const std::string& name = ""
+        const std::string& name = "",
+        int32_t layer_id = -1
     ){
         Tensor* t = new Tensor();
         t->name = name;
@@ -79,7 +93,7 @@ public:
         t->dims[1] = input_ids->dims[1];  // seq_len
         t->dims[2] = weight_info->dimensions[1];  // hidden_size
         t->src[0] = input_ids;
-        t->src[1] = OpFactory::weight_placeholder(weight_info, weight_info->name);
+        t->src[1] = OpFactory::weight_placeholder(weight_info, weight_info->name,layer_id);
         OpFactory::compute_strides(t);
         return t;
     }
@@ -90,19 +104,22 @@ public:
         Tensor* input,
         const TensorInfo* weight_info,
         float eps,
-        const std::string& name = ""
+        const std::string& name = "",
+        int32_t layer_id = -1
     ){
         Tensor* t = new Tensor();
         t->name = name;
+        t->layer_id = layer_id;
         t->type = TensorType::TENSOR_TYPE_ACTIVATION;
         t->dtype = input->dtype;
         t->op_type = OperationType::OP_TYPE_RMS_NORM;
         // 输出形状同输入
         std::copy(input->dims.begin(), input->dims.end(), t->dims.begin());
         t->src[0] = input;
-        t->src[1] = OpFactory::weight_placeholder(weight_info, weight_info->name);
+        t->src[1] = OpFactory::weight_placeholder(weight_info, weight_info->name,layer_id);
         t->op_params[0] = eps;
         OpFactory::compute_strides(t);
+
         return t;
     }
     static std::tuple<Tensor*, Tensor*> rope_cache(
@@ -110,7 +127,8 @@ public:
         int head_dim, 
         float theta, 
         DataType dtype, 
-        const std::string& name_prefix = "rope"
+        const std::string& name_prefix = "rope",
+        int32_t layer_id = -1
     ){
         int half_dim = head_dim / 2;
         auto make_cache_tensor = [&](const std::string& name) -> Tensor* {
@@ -130,7 +148,7 @@ public:
             for (int i = 2; i < TENSOR_MAX_DIMS; ++i) t->strides[i] = 0;
             t->data = nullptr;
             t->offset = 0;
-            t->backend = nullptr;
+            t->layer_id = layer_id;
             return t;
         };
         Tensor* cos_tensor = make_cache_tensor(name_prefix + "_cos");
@@ -144,9 +162,10 @@ public:
         return {sin_tensor,cos_tensor};
     }
     // y = x * sigmoid(x)
-    static Tensor* silu(Tensor* input, const std::string& name = ""){
+    static Tensor* silu(Tensor* input, const std::string& name = "", int32_t layer_id = -1){
         Tensor* t = new Tensor;
         t->name = name;
+        t->layer_id = layer_id;
         t->dtype = input->dtype;
         t->type = TensorType::TENSOR_TYPE_ACTIVATION;
 
@@ -157,24 +176,36 @@ public:
         return t;
     }
     // [X,Z] = [X,Y] * [Y,Z]
-    static Tensor* mul(Tensor* a, Tensor* b, const std::string& name = ""){
-        Tensor* t = new Tensor;
-        t->name = name;
-        t->dtype = a->dtype;
+    static Tensor* mul(
+        Tensor* a, 
+        Tensor* b, 
+        const std::string& name = "", 
+        int32_t layer_id = -1
+    ) {
+        for (int i = 0; i < TENSOR_MAX_DIMS; ++i) {
+            if (a->dims[i] != b->dims[i] && a->dims[i] > 0 && b->dims[i] > 0) {
+                throw std::runtime_error("mul: shape mismatch");
+            }
+        }
+        Tensor* t = new Tensor();
+        t->name = name.empty() ? a->name + "_mul_" + b->name : name;
+        t->layer_id = layer_id;
         t->type = TensorType::TENSOR_TYPE_ACTIVATION;
-
-        t->op_type = OperationType::OP_TYPE_MAT_MUL;
-        t->dims[0] = a->dims[0];
-        t->dims[1] = b->dims[1];
+        t->op_type = OperationType::OP_TYPE_MUL;
+        t->dtype = a->dtype;
+        std::copy(a->dims.begin(), a->dims.end(), t->dims.begin());
         t->src[0] = a;
         t->src[1] = b;
-        OpFactory::compute_strides(t);
+        t->data = nullptr;  // 执行时分配
+        t->offset = 0;
+        compute_strides(t);
         return t;
     }
     // 
-    static Tensor* add(Tensor* a, Tensor* b, const std::string& name = ""){
+    static Tensor* add(Tensor* a, Tensor* b, const std::string& name = "", int32_t layer_id = -1){
         Tensor* t = new Tensor;
         t->name = name;
+        t->layer_id = layer_id;
         t->dtype = a->dtype;
         t->type = TensorType::TENSOR_TYPE_ACTIVATION;
         t->op_type = OperationType::OP_TYPE_ADD;
@@ -188,18 +219,28 @@ public:
     static Tensor* reshape(
         Tensor* input,
         std::initializer_list<int64_t> new_shape_init,
-        const std::string& name = ""
+        const std::string& name = "",
+        int32_t layer_id = -1
     ){
         std::vector<int64_t> new_shape(new_shape_init);
+        
+        // 收集源有效维度 (跳过 0)
         std::vector<int64_t> src_dims;
         for (int i = 0; i < TENSOR_MAX_DIMS; ++i) {
-            if (input->dims[i] > 0) {
+            if (input->dims[i] != 0) {
                 src_dims.push_back(input->dims[i]);
             }
         }
-        // 2. 计算元素总数
-        size_t src_elements = std::accumulate(src_dims.begin(),src_dims.end(),1,std::multiplies<int64_t>());
-        // 3. 处理 -1: 自动推断
+        size_t src_elements = 1;
+        bool src_has_dynamic = false;
+        for (auto d : src_dims) {
+            if (d == -1) {
+                src_has_dynamic = true;  // 标记有动态维度
+            } else {
+                src_elements *= static_cast<size_t>(d);
+            }
+        }
+        // 处理目标的 -1
         size_t known_elements = 1;
         int infer_idx = -1;
         for (size_t i = 0; i < new_shape.size(); ++i) {
@@ -210,45 +251,55 @@ public:
             }
         }
         if (infer_idx >= 0) {
-            if (src_elements % known_elements != 0) {
-                throw std::runtime_error(std::format("Reshape invalid: {} elements cannot fit into shape", src_elements));
+            if (src_has_dynamic) {
+                new_shape[infer_idx] = -1;  // 保持动态
+            } else {
+                if (src_elements % known_elements != 0) {
+                    throw std::runtime_error(
+                        std::format("Reshape invalid: {} elements cannot fit into shape", src_elements));
+                }
+                new_shape[infer_idx] = static_cast<int64_t>(src_elements / known_elements);
             }
-            new_shape[infer_idx] = static_cast<int64_t>(src_elements / known_elements);
         }
-        // 4. 验证元素数匹配
-        size_t target_elements = std::accumulate(new_shape.begin(),new_shape.end(),1,std::multiplies<int64_t>());
-        if (src_elements != target_elements) {
-            throw std::runtime_error(std::format("Reshape mismatch: src={} vs target={}", src_elements, target_elements));
+        // 验证 (跳过动态维度)
+        if (!src_has_dynamic) {
+            size_t target_elements = 1;
+            for (auto d : new_shape) {
+                if (d > 0) target_elements *= static_cast<size_t>(d);
+            }
+            if (src_elements != target_elements) {
+                throw std::runtime_error(
+                    std::format("Reshape mismatch: src={} vs target={}", src_elements, target_elements));
+            }
         }
-        // 5. 创建视图 Tensor
+        // 创建视图 Tensor
         Tensor* view = new Tensor();
         view->name = name.empty() ? input->name + "_reshape" : name;
         view->dtype = input->dtype;
+        view->layer_id = layer_id;
         view->type = TensorType::TENSOR_TYPE_VIEW;
         view->op_type = OperationType::OP_TYPE_RESHAPE;
-        // 填充形状
-        std::fill(view->dims.begin(), view->dims.end(), 1);
+        std::fill(view->dims.begin(), view->dims.end(), 0);
         std::copy(new_shape.begin(), new_shape.end(), view->dims.begin());
         // 共享内存 (零拷贝)
         view->data = input->data;
         view->offset = input->offset;
-        view->backend = input->backend;
-        view->device_id = input->device_id;
-        view->src[0] = input;               // 依赖追踪
+        view->src[0] = input;
         OpFactory::compute_strides(view);
         return view;
     }
     static Tensor* permute(
         Tensor* input,
         std::initializer_list<int> perm_init,
-        const std::string& name = ""
+        const std::string& name = "",
+        int32_t layer_id = -1
     ){
         if (!input) return nullptr;
         std::vector<int> perm(perm_init);
         // 1. 收集输入有效维度
         std::vector<int64_t> src_dims;
         for (int i = 0; i < TENSOR_MAX_DIMS; ++i) {
-            if (input->dims[i] > 0) {
+            if (input->dims[i] != 0) {
                 src_dims.push_back(input->dims[i]);
             }
         }
@@ -266,9 +317,10 @@ public:
         Tensor* t = new Tensor();
         t->name = name.empty() ? input->name + "_permute" : name;
         t->dtype = input->dtype;
+        t->layer_id = layer_id;
         t->type = TensorType::TENSOR_TYPE_ACTIVATION;
         t->op_type = OperationType::OP_TYPE_PERMUTE;
-        std::fill(t->dims.begin(), t->dims.end(), 1);
+        std::fill(t->dims.begin(), t->dims.end(), 0);
         for (size_t i = 0; i < perm.size(); ++i) {
             t->dims[i] = src_dims[perm[i]];
         }
@@ -279,17 +331,31 @@ public:
     static Tensor* reshape_permute(
         Tensor* input,
         std::initializer_list<int64_t> new_shape_init,
-        std::initializer_list<int> perm_init,
-        const std::string& name = ""
+        std::initializer_list<int> new_perm_init,
+        const std::string& name = "",
+        int32_t layer_id = -1
     ){
-        Tensor* reshaped = OpFactory::reshape(input, new_shape_init, input->name + "_rp_reshape");
-        if (!reshaped) 
-            return nullptr;
-        Tensor* result = OpFactory::permute(reshaped, perm_init, name);
+        Tensor* reshaped = OpFactory::reshape(input, new_shape_init, name+"_reshape", layer_id);
+        if (!reshaped) return nullptr;
+        Tensor* result = OpFactory::permute(reshaped, new_perm_init, name+"_permute", layer_id);
         return result;
     }
+    static Tensor* permute_reshape(
+        Tensor* input,
+        std::initializer_list<int> new_perm_init,
+        std::initializer_list<int64_t> new_shape_init,
+        const std::string& name = "",
+        int32_t layer_id = -1
+    ){
+        Tensor* result = OpFactory::permute(input, new_perm_init, name+"_permute", layer_id);
+        if (!result) 
+            return nullptr;
+        Tensor* reshaped = OpFactory::reshape(result, new_shape_init, name+"_reshape", layer_id);
+        return reshaped;
+    }
     static Tensor* repeat_kv(Tensor* kv, int n_rep, const std::string& name = ""){
-
+        // todo...
+        throw std::runtime_error("repeat_kv not implemented yet");
     }
     //Scaled Dot-Product Attention
     static Tensor* SDPA(
@@ -300,7 +366,8 @@ public:
         float scale = -1.0f,
         bool causal = true,
         int num_kv_groups = 1,        // ⚠️ GQA: n_heads / n_kv_heads
-        const std::string& name = ""
+        const std::string& name = "",
+        int32_t layer_id = -1
     ){
         if (!q_rope || !k_rope || !v_4d) {
             throw std::runtime_error("sdpa: null input tensor");
@@ -318,6 +385,7 @@ public:
         Tensor* t = new Tensor();
         t->name = name.empty() ? "sdpa_out" : name;
         t->dtype = q_rope->dtype;
+        t->layer_id = layer_id;
         t->type = TensorType::TENSOR_TYPE_ACTIVATION;
         t->op_type = OperationType::OP_TYPE_SDPA;
         
@@ -327,8 +395,6 @@ public:
         // 视图：共享内存 (实际计算在后端)
         t->data = q_rope->data;  // ⚠️ 后端可能新分配
         t->offset = q_rope->offset;
-        t->backend = q_rope->backend;
-        t->device_id = q_rope->device_id;
         
         // 依赖追踪
         t->src[0] = q_rope;
@@ -361,7 +427,8 @@ public:
         Tensor* cos_cache,            // [max_seq, head_dim/2]
         Tensor* sin_cache,            // [max_seq, head_dim/2]
         Tensor* position_ids = nullptr,  // optional [1, S]
-        const std::string& name_suffix = ""
+        const std::string& name_suffix = "",
+        int32_t layer_id = -1
     ){
         if (!q || !k || !cos_cache || !sin_cache) {
             throw std::runtime_error("apply_rope: nullptr input tensor");
@@ -382,12 +449,6 @@ public:
         if (cos_cache->dims[1] != half_dim || sin_cache->dims[1] != half_dim) {
             throw std::runtime_error(std::format("apply_rope: cos/sin cache dim mismatch. expected half_dim={}, got {}", half_dim, cos_cache->dims[1]));
         }
-        // 验证 Q/K 维度一致
-        for (int i = 0; i < TENSOR_MAX_DIMS; ++i) {
-            if (q->dims[i] != k->dims[i]) {
-                throw std::runtime_error("apply_rope: Q and K must have same shape");
-            }
-        }
         auto make_rope_output = [&](Tensor* input, const std::string& name) -> Tensor* {
             Tensor* t = new Tensor();
             t->name = name;
@@ -398,8 +459,7 @@ public:
             std::copy(input->dims.begin(), input->dims.end(), t->dims.begin());
             t->data = input->data;
             t->offset = input->offset;
-            t->backend = input->backend;
-            t->device_id = input->device_id;
+            t->layer_id = layer_id;
             t->src[0] = input;           // Q 或 K
             t->src[1] = cos_cache;       // cos 缓存
             t->src[2] = sin_cache;       // sin 缓存
@@ -434,7 +494,7 @@ public:
         }
     }
     
-    static const TensorInfo* find_tensor(const GGUFInfo& info, const std::string& name) {
+    static const TensorInfo* find_tensor(const GGUFInfo& info, const std::string& name){
         for (const auto& t : info.tensors_info) {
             if (t.name == name) {
                 return &t;
@@ -442,81 +502,34 @@ public:
         }
         throw std::runtime_error(std::format("Tensor not found: {}", name));
     }
-    static std::array<int64_t, TENSOR_MAX_DIMS> 
-    infer_linear_output(
+    static std::array<int64_t, TENSOR_MAX_DIMS> infer_linear_output(
         std::span<const int64_t> input_dims, 
         std::span<const int64_t> weight_dims,
-        bool transpose) 
-    {
+        bool transpose
+    ) {
         std::array<int64_t, TENSOR_MAX_DIMS> out{};
-        std::fill(out.begin(), out.end(), 1);  // 初始化为 1
-        if (input_dims.empty() || weight_dims.empty()) {
-            throw std::runtime_error("infer_linear_output: empty input or weight dims");
+        std::fill(out.begin(), out.end(), 0);
+        int input_ndim = 0;
+        for (int i = static_cast<int>(input_dims.size()) - 1; i >= 0; --i) {
+            if (input_dims[i] != 0) {
+                input_ndim = i + 1;
+                break;
+            }
         }
-        if (weight_dims.size() != 2) {
-            throw std::runtime_error(
-                std::format("infer_linear_output: weight must be 2D, got {}D", weight_dims.size()));
-        }
-        // GGUF 权重布局: [out_features, in_features]
-        int64_t weight_out = weight_dims[0];
+        if (input_ndim == 0) throw std::runtime_error("Empty input shape");
+        int64_t weight_out = weight_dims[0]; 
         int64_t weight_in = weight_dims[1];
-        if (transpose) {
-            // 转置后: [in_features, out_features]
+        if (!transpose) {
             std::swap(weight_out, weight_in);
         }
-        // 输入最后一个维度必须匹配 weight_in
-        int64_t input_last_dim = 0;
-        for (int i = TENSOR_MAX_DIMS - 1; i >= 0; --i) {
-            if (input_dims[i] > 0) {
-                input_last_dim = input_dims[i];
-                break;
-            }
+        int64_t input_last = input_dims[input_ndim - 1];
+        if (input_last > 0 && weight_in > 0 && input_last != weight_in) {
+            throw std::runtime_error(std::format("Linear dimension mismatch: input last={} vs weight in={}",input_last, weight_in));
         }
-        if (input_last_dim > 0 && weight_in > 0 && input_last_dim != weight_in) {
-            throw std::runtime_error(
-                std::format("infer_linear_output: dimension mismatch. ""input last dim={} vs weight in_dim={}", input_last_dim, weight_in));
+        for (int i = 0; i < input_ndim - 1; ++i) {
+            out[i] = input_dims[i];
         }
-        // 保留输入的前 N-1 个维度 (batch, seq_len, ...)
-        int out_idx = 0;
-        for (size_t i = 0; i < input_dims.size(); ++i) {
-            if (input_dims[i] > 0 || i < input_dims.size() - 1) {
-                // 非最后一个维度，或动态维度 (-1)
-                out[out_idx++] = input_dims[i];
-            }
-        }
-        // 最后一个维度替换为 weight_out
-        // 找到输出中最后一个有效位置
-        int last_valid_idx = 0;
-        for (int i = TENSOR_MAX_DIMS - 1; i >= 0; --i) {
-            if (out[i] > 0 || i < static_cast<int>(input_dims.size())) {
-                last_valid_idx = i;
-                break;
-            }
-        }
-        // 更简单的方法: 直接覆盖输入的最后一个维度位置
-        out_idx = 0;
-        for (size_t i = 0; i < input_dims.size(); ++i) {
-            if (i == input_dims.size() - 1) {
-                // 最后一个维度: 替换为 out_features
-                out[out_idx++] = weight_out;
-            } else {
-                // 其他维度: 保留
-                out[out_idx++] = input_dims[i];
-            }
-        }
+        out[input_ndim - 1] = weight_out;
         return out;
-    }
-    static std::array<int64_t, TENSOR_MAX_DIMS> infer_linear_output(
-        const Tensor* input, 
-        const TensorInfo* weight_info,
-        bool transpose)
-    {
-        std::vector<int64_t> input_dims;
-        for (int i = 0; i < TENSOR_MAX_DIMS; ++i) {
-            if (input->dims[i] > 0 || i < TENSOR_MAX_DIMS - 1) {
-                input_dims.push_back(input->dims[i]);
-            }
-        }
-        return infer_linear_output(input_dims, weight_info->dimensions, transpose);
     }
 };

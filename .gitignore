@@ -2,6 +2,7 @@
 bin/
 build/
 dist/
+models/
 
 *.o
 *.so
@@ -12,6 +13,7 @@ dist/
 # IDE
 .vscode/
 .claude/
+.cache/
 
 .idea/
 *.swp

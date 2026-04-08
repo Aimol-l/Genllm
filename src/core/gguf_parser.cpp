@@ -169,10 +169,19 @@ std::vector<TensorInfo> GGUFParser::parse_tensors_info(uint64_t tensor_count) {
     for (uint64_t i = 0; i < tensor_count; ++i) {
         TensorInfo info;
         info.name = read_string();
+        if (std::find(transpose_tensor_names.begin(), transpose_tensor_names.end(), info.name) != transpose_tensor_names.end()) {
+            info.transpose = true;
+        }else{
+            info.transpose = false;
+        }
         uint32_t dims = read_uint32_le();
         info.dimensions.resize(dims);
-        for (uint64_t d = dims-1; d >= 0; d--) {
-            info.dimensions[d] = static_cast<int64_t>(read_uint64_le());
+        for (uint32_t d = 0; d < dims; d++) {
+            if(info.transpose){
+                info.dimensions[dims - 1 - d] = static_cast<int64_t>(read_uint64_le());
+            }else{
+                info.dimensions[d] = static_cast<int64_t>(read_uint64_le());
+            }
         }
         info.dtype = static_cast<DataType>(read_uint32_le());
         info.offset = read_uint64_le();

@@ -1,29 +1,55 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.28)
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug")
 endif()
-set(CMAKE_CXX_STANDARD 23) # 设置为C++ 20标准
-set(CMAKE_CXX_STANDARD_REQUIRED ON) #强制C++20
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
 set(THIS_PROJECT_NAME "main")
 
 project(
-    ${THIS_PROJECT_NAME}        #项目名称
-    LANGUAGES C CXX      #编程语言
-    DESCRIPTION "test for gguf parser"  #项目描述
+    ${THIS_PROJECT_NAME}
+    LANGUAGES C CXX
+    DESCRIPTION "test for gguf parser"
 )
+
+option(BACKEND_CUDA "Enable CUDA backend support" OFF)
+
 file(GLOB SRC_FILES
     CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/src/*.cpp"
     "${PROJECT_SOURCE_DIR}/src/*/*.cpp"
-
 )
-get_filename_component(PROJECT_DIR ${CMAKE_CURRENT_LIST_FILE} DIRECTORY)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_DIR}/bin)
 
-include_directories(${PROJECT_DIR}/include)
-include_directories(${PROJECT_DIR}/include/core)
-include_directories(${PROJECT_DIR}/include/backend)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
+include_directories(
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/include/core
+    ${PROJECT_SOURCE_DIR}/include/backend
+    ${PROJECT_SOURCE_DIR}/include/model
+)
 
-add_executable(${THIS_PROJECT_NAME}  ${SRC_FILES})
+if(BACKEND_CUDA)
+    include(FetchContent)
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(NOT CMAKE_CUDA_COMPILER)
+        message(FATAL_ERROR "CUDA compiler not found. Install CUDA toolkit or disable BACKEND_CUDA.")
+    endif()
+    enable_language(CUDA)
+
+    find_package(CUDAToolkit REQUIRED)
+
+    list(FILTER SRC_FILES EXCLUDE REGEX "backend_cuda\\.cpp$")
+    add_executable(${THIS_PROJECT_NAME} ${SRC_FILES} "${PROJECT_SOURCE_DIR}/src/backend/backend_cuda.cpp")
+
+    target_compile_definitions(${THIS_PROJECT_NAME} PRIVATE BACKEND_CUDA)
+    target_link_libraries(${THIS_PROJECT_NAME} PRIVATE CUDA::cudart)
+else()
+    list(FILTER SRC_FILES EXCLUDE REGEX "backend_cuda\\.cpp$")
+    add_executable(${THIS_PROJECT_NAME} ${SRC_FILES})
+endif()

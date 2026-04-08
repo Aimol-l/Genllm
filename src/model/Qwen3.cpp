@@ -1,7 +1,7 @@
 #include "model/Qwen3.hpp"
-#include "memory_manager.h"
+// #include "core/mmanger.h"
 #include "model/op_factory.hpp"
-#include <fstream>
+#include <cstddef>
 
 
 void Qwen3Model::print_info(){
@@ -9,12 +9,15 @@ void Qwen3Model::print_info(){
     std::println("  Name: {}", name);
     std::println("  Type: {}", model_type_to_string(type));
     std::println("  Architecture: {}", model_arch_to_string(arch));
-    std::println("  Padding: {}", params.padding);
+    std::println("  top_p: {}", params.top_p);
+    std::println("  temperature: {}", params.templature);
 }
 
 void Qwen3Model::set_params(void* p){
     auto temp = static_cast<Qwen3Params*>(p);
-    params.padding = temp->padding;
+    params.top_p = temp->top_p;
+    params.templature = temp->templature;
+    std::println("Updated Qwen3 parameters: top_p={}, temperature={}", params.top_p, params.templature);
 }
 // ========== 辅助函数：构建单层 ==========
 Tensor* Qwen3Model::build_qwen3_layer(
@@ -35,66 +38,80 @@ Tensor* Qwen3Model::build_qwen3_layer(
     // [1] Self-Attention 分支
     // ──────────────────────────────────────────────────
     // 1.1 RMSNorm: input_layernorm
-    const TensorInfo* attn_norm_info = OpFactory::find_tensor(info, prefix + ".attn_norm.weight");
-    Tensor* x_norm = OpFactory::rms_norm(input, attn_norm_info, rms_norm_eps, "x_norm"); //[batch, seq_len, hidden_size]
+    const TensorInfo* attn_norm_info = OpFactory::find_tensor(info, prefix + ".attn_norm.weight"); // [hidden_size]
+    Tensor* x_norm = OpFactory::rms_norm(input, attn_norm_info, rms_norm_eps, "x_norm",layer_idx); // [batch, seq_len, hidden_size]
     
     // 1.2 Q/K/V 投影 (并行)
-    const TensorInfo* q_weight = OpFactory::find_tensor(info, prefix + ".attn_q.weight");
-    const TensorInfo* k_weight = OpFactory::find_tensor(info, prefix + ".attn_k.weight");
-    const TensorInfo* v_weight = OpFactory::find_tensor(info, prefix + ".attn_v.weight");
+    const TensorInfo* q_weight = OpFactory::find_tensor(info, prefix + ".attn_q.weight"); // [hidden_size, 2048]
+    const TensorInfo* k_weight = OpFactory::find_tensor(info, prefix + ".attn_k.weight"); // [hidden_size, 1024]
+    const TensorInfo* v_weight = OpFactory::find_tensor(info, prefix + ".attn_v.weight"); // [hidden_size, 1024]
 
-    Tensor* q_flat = OpFactory::linear(x_norm, q_weight, false, "q_flat"); //[B, S, 2048]
-    Tensor* k_flat = OpFactory::linear(x_norm, k_weight, false, "k_flat");// k_flat: [B, S, 1024]
-    Tensor* v_flat = OpFactory::linear(x_norm, v_weight, false, "v_flat");// v_flat: [B, S, 1024]
+    // [batch, seq_len, hidden_size] @ [hidden_size, 2048] -> [batch, seq_len, 2048]
+    Tensor* q_flat = OpFactory::linear(x_norm, q_weight, false, "q_flat",layer_idx);
+    // [batch, seq_len, hidden_size] @ [hidden_size, 1024] -> [batch, seq_len, 1024]
+    Tensor* k_flat = OpFactory::linear(x_norm, k_weight, false, "k_flat",layer_idx);
+    // [batch, seq_len, hidden_size] @ [hidden_size, 1024] -> [batch, seq_len, 1024]
+    Tensor* v_flat = OpFactory::linear(x_norm, v_weight, false, "v_flat",layer_idx);
     
-    // 1.3 Reshape + Permute: [B, S, n*head_dim] → [B, n, S, head_dim]
-    Tensor* q_4d = OpFactory::reshape_permute(q_flat,{1,-1,num_heads,head_dim},{0, 2, 1, 3},"q_4d");
-    Tensor* k_4d = OpFactory::reshape_permute(k_flat, {1, -1, num_kv_heads, head_dim}, {0, 2, 1, 3}, "k_4d");
-    Tensor* v_4d = OpFactory::reshape_permute(v_flat, {1, -1, num_kv_heads, head_dim}, {0, 2, 1, 3}, "v_4d");
+    // 1.3 
+    // [batch, seq_len, 2048] -> [batch, seq_len, num_heads, head_dim] -> [batch, num_heads, seq_len, head_dim]
+    Tensor* q_4d = OpFactory::reshape_permute(q_flat, {1, -1, num_heads,    head_dim}, {0, 2, 1, 3}, "q_4d",layer_idx);
+    // [batch, seq_len, 1024] -> [batch, seq_len, num_kv_heads, head_dim] -> [batch, num_kv_heads, seq_len, head_dim]
+    Tensor* k_4d = OpFactory::reshape_permute(k_flat, {1, -1, num_kv_heads, head_dim}, {0, 2, 1, 3}, "k_4d",layer_idx);
+    // [batch, seq_len, 1024] -> [batch, seq_len, num_kv_heads, head_dim] -> [batch, num_kv_heads, seq_len, head_dim]
+    Tensor* v_4d = OpFactory::reshape_permute(v_flat, {1, -1, num_kv_heads, head_dim}, {0, 2, 1, 3}, "v_4d",layer_idx);
     
     // 1.4 Per-head RMSNorm (只对 head_dim 归一化)
-    const TensorInfo* q_norm_info = OpFactory::find_tensor(info, prefix + ".attn_q_norm.weight");
-    const TensorInfo* k_norm_info = OpFactory::find_tensor(info, prefix + ".attn_k_norm.weight");
+    const TensorInfo* q_norm_info = OpFactory::find_tensor(info, prefix + ".attn_q_norm.weight"); // [128]
+    const TensorInfo* k_norm_info = OpFactory::find_tensor(info, prefix + ".attn_k_norm.weight"); // [128]
     
     // [B, n, S, head_dim]
-    Tensor* q_normed = OpFactory::rms_norm(q_4d, q_norm_info, rms_norm_eps, "q_normed");
-    Tensor* k_normed = OpFactory::rms_norm(k_4d, k_norm_info, rms_norm_eps, "k_normed");
+    Tensor* q_normed = OpFactory::rms_norm(q_4d, q_norm_info, rms_norm_eps, "q_normed",layer_idx); // [batch, num_heads, seq_len, head_dim]
+    Tensor* k_normed = OpFactory::rms_norm(k_4d, k_norm_info, rms_norm_eps, "k_normed",layer_idx); // [batch, num_kv_heads, seq_len, head_dim]
 
-    // 1.5 Apply RoPE
-    auto [q_rope, k_rope] = OpFactory::apply_rope(q_normed, k_normed, rope_cos, rope_sin);
+    // 1.5 Apply RoPE, [B, num_heads, seq_len, head_dim], [B, num_kv_heads, seq_len, head_dim]
+    auto [q_rope, k_rope] = OpFactory::apply_rope(q_normed, k_normed, rope_cos, rope_sin,nullptr,"",layer_idx); 
     
     // 1.6 SDPA / FlashAttention
-    Tensor* attn_4d = OpFactory::SDPA(q_rope, k_rope, v_4d,nullptr,-1.0f,true,16 / 8,"attn_out");
+    //  [B, num_heads, seq_len, head_dim]
+    Tensor* attn_4d = OpFactory::SDPA(q_rope, k_rope, v_4d,nullptr,1.0f/(std::sqrt(128.0f)),true,16 / 8,"attn_4d",layer_idx);
     
-    // 1.7 Reshape back + Output projection, attn_flat: [B, S, 2048]
-    Tensor* attn_flat = OpFactory::reshape_permute(attn_4d,{0, 2, 1, 3},{1, -1, num_heads * head_dim},"attn_flat");
+    // 1.7 [B, num_heads, seq_len, head_dim] -> [B, seq_len, num_heads, head_dim] -> [B, seq_len, num_heads*head_dim]
+    Tensor* attn_flat = OpFactory::permute_reshape(attn_4d,{0, 2, 1, 3},{1,-1,num_heads * head_dim},"attn_flat",layer_idx);
 
-    const TensorInfo* attn_out_weight = OpFactory::find_tensor(info, prefix + ".attn_output.weight");
-    Tensor* attn_out = OpFactory::linear(attn_flat, attn_out_weight, false, "attn_out"); // attn_out: [B, S, hidden_size]
+    const TensorInfo* attn_out_weight = OpFactory::find_tensor(info, prefix + ".attn_output.weight");   // [2048, hidden_size]
+
+    // [B, seq_len, num_heads*head_dim]@ [num_heads*head_dim, hidden_size] -> [B, seq_len, hidden_size]
+    Tensor* attn_out = OpFactory::linear(attn_flat, attn_out_weight, false, "attn_out",layer_idx);
     
     // 1.8 残差连接
-    Tensor* ffn_input = OpFactory::add(attn_out, input, "ffn_input"); //ffn_input: [B, S, hidden_size]
+    Tensor* ffn_input = OpFactory::add(attn_out, input, "ffn_input",layer_idx); // [B,seq_len, hidden_size]
     // ──────────────────────────────────────────────────
     // [2] SwiGLU FFN 分支
     // ──────────────────────────────────────────────────
     // 2.1 RMSNorm: post_attention_layernorm
-    const TensorInfo* ffn_norm_info = OpFactory::find_tensor(info, prefix + ".ffn_norm.weight");
-    Tensor* ffn_normed = OpFactory::rms_norm(ffn_input, ffn_norm_info, rms_norm_eps, "ffn_normed");
+    const TensorInfo* ffn_norm_info = OpFactory::find_tensor(info, prefix + ".ffn_norm.weight"); // [hidden_size]
+    Tensor* ffn_normed = OpFactory::rms_norm(ffn_input, ffn_norm_info, rms_norm_eps, "ffn_normed",layer_idx); // [B, seq_len, hidden_size]
 
     // 2.2 SwiGLU: gate + up (并行)
-    const TensorInfo* gate_weight = OpFactory::find_tensor(info, prefix + ".ffn_gate.weight");
-    const TensorInfo* up_weight = OpFactory::find_tensor(info, prefix + ".ffn_up.weight");
-    Tensor* gate = OpFactory::linear(ffn_normed, gate_weight, false, "gate");// [B, S, 3072]
-    Tensor* up = OpFactory::linear(ffn_normed, up_weight, false, "up"); // up: [B, S, 3072]
+    const TensorInfo* gate_weight = OpFactory::find_tensor(info, prefix + ".ffn_gate.weight");  // [hidden_size, 3072]
+    const TensorInfo* up_weight = OpFactory::find_tensor(info, prefix + ".ffn_up.weight");      // [hidden_size, 3072]
+
+    // [B, seq_len, hidden_size] @ [hidden_size, 3072] -> [B, seq_len, 3072]
+    Tensor* gate = OpFactory::linear(ffn_normed, gate_weight, false, "gate",layer_idx);
+    // [B, seq_len, hidden_size] @ [hidden_size, 3072] -> [B, seq_len, 3072]
+    Tensor* up = OpFactory::linear(ffn_normed, up_weight, false, "up",layer_idx);
     
     // 2.3 SiLU(gate) * up
-    Tensor* gate_act = OpFactory::silu(gate, "gate_act");
-    Tensor* ffn_inter = OpFactory::mul(gate_act, up, "ffn_inter"); // ffn_inter: [B, S, 3072]
+    Tensor* gate_act = OpFactory::silu(gate, "gate_act",layer_idx);// [B, seq_len, 3072]
+    Tensor* ffn_inter = OpFactory::mul(gate_act, up, "ffn_inter",layer_idx); // [B, seq_len, 3072] * [B, seq_len, 3072] -> [B, seq_len, 3072]
 
     // 2.4 Down projection + 残差
-    const TensorInfo* down_weight = OpFactory::find_tensor(info, prefix + ".ffn_down.weight");
-    Tensor* ffn_out = OpFactory::linear(ffn_inter, down_weight, false, "ffn_out"); // ffn_out: [B, S, hidden_size]
-    Tensor* layer_output = OpFactory::add(ffn_out, ffn_input, "layer_output"); //[B, S, hidden_size]
+    const TensorInfo* down_weight = OpFactory::find_tensor(info, prefix + ".ffn_down.weight");  // [3072, hidden_size]
+    // [B, seq_len, 3072] @ [3072, hidden_size] -> [B, seq_len, hidden_size]
+    Tensor* ffn_out = OpFactory::linear(ffn_inter, down_weight, false, "ffn_out",layer_idx);
+    Tensor* layer_output = OpFactory::add(ffn_out, ffn_input, "layer_output",layer_idx); // [B, seq_len, hidden_size]
+
     return layer_output;
 }
 
@@ -102,31 +119,43 @@ ComputeGraph& Qwen3Model::build_graph(const GGUFInfo& info){
     std::println("Building Qwen3 computation graph...");
     // ========== Step 1: 解析配置参数 ==========
     auto& meta = info.metadata;
-    // 从 GGUF metadata 读取配置
+    // 基础维度
     int hidden_size = meta.value("qwen3.embedding_length", 1024);
-    int num_layers = meta.value("qwen3.block_count", 28);
+    // int num_layers = meta.value("qwen3.block_count", 28);
+    int num_layers =2; // 先只构建2层用于测试，后续再改回28层
     int num_heads = meta.value("qwen3.attention.head_count", 16);
-    int num_kv_heads = meta.value("qwen3.attention.head_count_kv", 16);
-    int head_dim = hidden_size / num_heads;  // 128
-    int vocab_size = meta.value("qwen3.vocab_size", 151936);
+    int num_kv_heads = meta.value("qwen3.attention.head_count_kv", 8); 
+    int head_dim = meta.value("qwen3.attention.key_length", 128);
+    int vocab_size = 0;
+    if (meta.contains("tokenizer.ggml.tokens") && meta["tokenizer.ggml.tokens"].is_array()) {
+        vocab_size = static_cast<int>(meta["tokenizer.ggml.tokens"].size());
+    }
+    if (vocab_size == 0) {
+        for (const auto& t : info.tensors_info) {
+            if (t.name == "token_embd.weight" && t.dimensions.size() == 2) {
+                vocab_size = static_cast<int>(t.dimensions[1]);  // [hidden, vocab]
+                break;
+            }
+        }
+    }
+    if (vocab_size == 0) throw std::runtime_error("Cannot determine vocab_size");
     int intermediate_size = meta.value("qwen3.feed_forward_length", 3072);
     float rms_norm_eps = meta.value("qwen3.attention.layer_norm_rms_epsilon", 1e-6f);
-    float rope_theta = meta.value("qwen3.rope_freq_base", 1000000.0f);
+    float rope_theta = meta.value("qwen3.rope.freq_base", 1000000.0f);
     int max_seq_len = meta.value("qwen3.context_length", 40960);
-    // ========== Step 2: 创建输入节点 ==========
-    // input_ids: [batch, seq_len] seq_len是token的数量
-    Tensor* input_ids = OpFactory::placeholder(DataType::GGML_TYPE_I32,TensorType::TENSOR_TYPE_INPUT, {1, -1},"input_ids");
-    // ========== Step 3: 预计算 RoPE ==========
-    // precompute_rope 只需要一次，与输入无关
-    auto[rope_sin,rope_cos] = OpFactory::rope_cache(max_seq_len, head_dim, rope_theta,DataType::GGML_TYPE_F32);
-    // ========== Step 4: 嵌入层 ==========
-    const TensorInfo* embd_weight_info = OpFactory::find_tensor(info, "token_embd.weight");
-    if (!embd_weight_info) {
-        throw std::runtime_error("token_embd.weight not found in GGUF");
-    }
-    // Embedding lookup: input_ids → x_in [batch, seq_len, hidden_size]
-    Tensor* x_in = OpFactory::embedding_lookup(input_ids, embd_weight_info,"x_in"); //{1, seq_len, hidden_size}
-    // ========== Step 5: 循环构建 num_layers 层 ==========
+    std::println("Config: hidden={}, heads={}/kv={}, head_dim={}, vocab={}, layers={}",hidden_size, num_heads, num_kv_heads, head_dim, vocab_size, num_layers);
+    //=====================================================================================
+
+    Tensor* input_ids = OpFactory::placeholder(DataType::GGML_TYPE_I32,TensorType::TENSOR_TYPE_INPUT, {1, -1},"input_ids"); //[B, seq_len]
+
+    auto[rope_sin,rope_cos] = OpFactory::rope_cache(max_seq_len, head_dim, rope_theta,DataType::GGML_TYPE_F32); // [max_seq_len, head_dim/2]
+
+    const TensorInfo* embd_weight_info = OpFactory::find_tensor(info, "token_embd.weight"); // [vocab_size, hidden_size].T
+
+    if (!embd_weight_info) throw std::runtime_error("token_embd.weight not found in GGUF");
+
+    Tensor* x_in = OpFactory::embedding_lookup(input_ids, embd_weight_info,"x_in"); // {B, seq_len, hidden_size}
+
     Tensor* prev_output = x_in;
     for (int layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
         prev_output = this->build_qwen3_layer(
@@ -141,44 +170,18 @@ ComputeGraph& Qwen3Model::build_graph(const GGUFInfo& info){
             rms_norm_eps,
             rope_cos,
             rope_sin
-        );
+        ); // [B, seq_len, hidden_size]
     }
     // ========== Step 6: 最终归一化 + LM Head ==========
-    const TensorInfo* output_norm_info = OpFactory::find_tensor(info, "output_norm.weight");
-    Tensor* final_norm = OpFactory::rms_norm(prev_output,output_norm_info,rms_norm_eps,"final_norm");
-    Tensor* logits = OpFactory::linear(final_norm,embd_weight_info,true,"logits"); //{1, seq_len, vocab_size}
+    const TensorInfo* output_norm_info = OpFactory::find_tensor(info, "output_norm.weight"); // [hidden_size]
+    Tensor* final_norm = OpFactory::rms_norm(prev_output,output_norm_info,rms_norm_eps,"final_norm",num_layers); // [B, seq_len, hidden_size]
+
+    // LM Head: [B, seq_len, hidden_size] @ [hidden_size, vocab_size] -> [B, seq_len, vocab_size]
+    Tensor* logits = OpFactory::linear(final_norm,embd_weight_info,true,"logits",num_layers);
+    logits->type = TensorType::TENSOR_TYPE_OUTPUT; // 标记为输出张量
+    
     // ========== Step 3: 从 logits 反向收集，构建 ComputeGraph ==========
-    this->graph_.clear(); // 不必回收Tensor.data,因为都还没有分配呢！
     this->graph_.build_from_outputs({logits});
+
     return this->graph_;
 }
-
-// void Qwen3Model::load_weights(GGUFInfo& info, MemoryManager* mem_manager) {
-//     if (!mem_manager) {
-//         throw std::runtime_error("Memory manager is null");
-//     }
-//     std::println("\n=== Loading Qwen3 weights ===");
-//     // TODO: 实现实际的权重加载逻辑
-//     // 1. 遍历 info.tensors_info，找到每个权重张量
-//     // 2. 从 graph.m_leafs 中找到对应的 Tensor 对象
-//     // 3. 打开 GGUF 文件
-//     // 4. 读取张量数据到已分配的内存（tensor->data）
-//     std::println("  Total tensors in GGUF: {}", info.tensors_info.size());
-//     std::println("  Total leaf tensors in graph: {}", graph.m_leafs.size());
-//     // 示例：遍历图中的叶子节点（权重）
-//     for (auto* leaf : graph.m_leafs) {
-//         if (!leaf || leaf->name.empty()) continue;
-//         std::println("  Found weight: {}", leaf->name);
-//         // 检查是否已分配内存
-//         if (leaf->data) {
-//             std::println("    Already allocated at 0x{:x}", reinterpret_cast<uintptr_t>(leaf->data));
-//         } else {
-//             std::println("    Not allocated yet");
-//         }
-//         // TODO: 从 GGUF 文件加载数据
-//         // 1. 在 info.tensors_info 中查找 leaf->name
-//         // 2. 获取张量的文件偏移量和大小
-//         // 3. 打开 GGUF 文件并读取数据到 leaf->data
-//     }
-//     std::println("\nWeight loading completed!");
-// }

@@ -1,8 +1,6 @@
 #pragma once
 #include <cstdint>
 #include <string>
-#include <format>
-#include <array>
 
 // 支持的后端设备
 enum class Device: uint8_t {
@@ -13,17 +11,17 @@ enum class Device: uint8_t {
     AUTO = 255
 };
 enum class TensorType : uint8_t {
-    TENSOR_TYPE_UNKNOWN = 0,              // 未初始化或无效
+    TENSOR_TYPE_UNKNOWN = 0,
+    // [静态]   只需计算/加载一次，整个推理过程中保持不变
     TENSOR_TYPE_WEIGHT,                   // 模型权重 (如 attn_q.weight, ffn_down.weight)
-    TENSOR_TYPE_BIAS,                     // 偏置 (如 linear.bias, 可选)
-    TENSOR_TYPE_EMBEDDING,                // 嵌入表 (token_embd.weight)
     TENSOR_TYPE_CACHE,                    // 预计算缓存 (如 RoPE cos/sin 表)
+    TENSOR_TYPE_KV_CACHE,                 // KV Cache (跨 step 复用，特殊管理)
+    // [动态] 每轮推理都需要计算/更新
     TENSOR_TYPE_INPUT,                    // 用户输入 (如 input_ids, position_ids)
     TENSOR_TYPE_ACTIVATION,               // 中间激活值 (如 q_proj, attn_out, ffn_inter)
     TENSOR_TYPE_OUTPUT,                   // 最终输出 (如 logits)
-    TENSOR_TYPE_KV_CACHE,                 // KV Cache (跨 step 复用，特殊管理)
+    // [特殊] 视图类型，不占用实际内存，多个视图共享同一数据块
     TENSOR_TYPE_VIEW,                     // 视图 (reshape/permute 创建，共享内存)
-    TENSOR_TYPE_TEMP,                     // 临时缓冲区 (算子内部临时分配)
 };
 // 权重数据类型枚举
 enum class DataType:uint8_t {
@@ -203,6 +201,7 @@ inline std::string operation_type_to_string(OperationType op) {
         case OperationType::OP_TYPE_MAT_MUL:       return "MatMul";
         case OperationType::OP_TYPE_TRANSPOSE:     return "Transpose";
         case OperationType::OP_TYPE_RESHAPE:       return "Reshape";
+        case OperationType::OP_TYPE_PERMUTE:       return "Permute";
         case OperationType::OP_TYPE_VIEW:          return "View";
         case OperationType::OP_TYPE_CONCAT:        return "Concat";
         case OperationType::OP_TYPE_REPEAT:        return "Repeat";
@@ -218,6 +217,17 @@ inline std::string operation_type_to_string(OperationType op) {
         case OperationType::OP_TYPE_UPSCALE:       return "Upscale";
         case OperationType::OP_TYPE_PAD:           return "Pad";
         case OperationType::OP_TYPE_UNPAD:         return "Unpad";
+        case OperationType::OP_TYPE_MEMCPY:        return "Memcpy";
+        case OperationType::OP_TYPE_PLACEHOLDER:   return "Placeholder";
+        case OperationType::OP_TYPE_EMBEDDING:     return "Embedding";
+        case OperationType::OP_TYPE_LINEAR:        return "Linear";
+        case OperationType::OP_TYPE_APPLY_ROPE:    return "Rope";
+        case OperationType::OP_TYPE_SDPA:          return "SDPA";
+        case OperationType::OP_TYPE_TOKENIZE:      return "Tokenize";
+        case OperationType::OP_TYPE_SAMPLING:      return "Sampling";
+        case OperationType::OP_TYPE_ROPE_CACHE:    return "RopeCache";
+        case OperationType::OP_TYPE_CONV2D:        return "Conv2D";
+        case OperationType::OP_TYPE_FLASH_ATTN:    return "FlashAttn";
         default:                                   return "Unknown";
     }
 }
