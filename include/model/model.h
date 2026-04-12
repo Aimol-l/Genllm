@@ -26,8 +26,7 @@ public:
     virtual void print_info() = 0;
     virtual void set_params(void*) = 0;
     virtual ComputeGraph& build_graph(const GGUFInfo&) = 0;
-    // 加载权重（使用内存管理器分配内存）
-    // virtual void load_weights(GGUFInfo& info, MemoryManager* mem_manager) = 0;
+    virtual int64_t max_seq_len() const { return 1; }
 };
 
 

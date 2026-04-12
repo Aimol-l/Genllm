@@ -5,7 +5,9 @@
 
 #include "pools.h"
 #include "resource.h"
+#include "graph.hpp"
 #include "utils/utils.hpp"
+#include "core/gguf_parser.h"
 
 class MemoryManager {
 private:
@@ -19,9 +21,10 @@ private:
             return static_cast<size_t>(k.dev) ^ (k.id << 8);
         }
     };
+
+    bool lock_memory_ = false;
     std::unordered_map<DevKey, DevicePools, DevKeyHash> devices_;
     
-    bool lock_memory_ = false;
     std::unique_ptr<IMemoryResource> make_resource(Device dev, size_t dev_id);
 public:
     MemoryManager() = default;
@@ -32,6 +35,10 @@ public:
 
     void reset_all_activations();
     void print_all_usage() const;
+
+    void load_weights(GGUFParser& parser, const ComputeGraph& graph);
+
+
     DevicePools* get(Device dev, size_t dev_id);
     DevicePools& get_or_create(Device dev, size_t dev_id,
                                size_t weight_cap,

@@ -15,10 +15,14 @@ private:
 public:
     void reset();
     explicit MemoryPool(std::unique_ptr<IMemoryResource> resource,size_t capacity,std::string name);
-    ~MemoryPool();
+    ~MemoryPool(){
+        if (buffer_ && capacity_ > 0) {
+            resource_->deallocate(buffer_, capacity_);
+        }
+    }
     MemoryPool(const MemoryPool&) = delete;
     MemoryPool& operator=(const MemoryPool&) = delete;
-    MemoryBlock allocate(size_t size, size_t alignment = 16);
+    MemoryBlock allocate(size_t size, size_t alignment);
 
     std::string format_usage() const;
     [[nodiscard]] size_t capacity() const { return capacity_; }

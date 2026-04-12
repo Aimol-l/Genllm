@@ -22,6 +22,7 @@ void* CudaMemoryResource::allocate(size_t size, size_t alignment) {
 
 void CudaMemoryResource::deallocate(void* ptr, size_t size) {
     if (ptr) cudaFree(ptr);
+    std::println("Deallocated {} bytes on CUDA{}", size, device_id_);
 }
 
 #endif

@@ -37,7 +37,7 @@ std::vector<GraphScheduler::LayerCost> GraphScheduler::estimate_layer_costs(cons
         for (auto* t : tensors) {
             if (t->type == TensorType::TENSOR_TYPE_VIEW) 
                 continue;
-            lc.activation_bytes += t->bytes(); // 这里错误
+            lc.activation_bytes += t->bytes_at(config_.max_seq_len);
         }
         costs.push_back(lc);
     }
@@ -155,7 +155,7 @@ void GraphScheduler::print_summary(
     const std::vector<LayerCost>& costs,
     const std::vector<BackendInfo>& devices) const
 {
-    std::println("\n=== GraphScheduler Summary ===");
+    std::println("=== GraphScheduler Summary ===");
     std::println("  Per-layer cost estimate:");
     for (const auto& c : costs) {
         std::println("    L{:>3d}: weight={}  activation={}  kv_cache={}  total={}",
@@ -165,7 +165,7 @@ void GraphScheduler::print_summary(
                      format_bytes(c.kv_cache_bytes),
                      format_bytes(c.total()));
     }
-    std::println("\n  Device assignments:");
+    std::println("  Device assignments:");
     for (const auto& a : this->assignments_) {
         int n_layers = a.end_layer - a.start_layer + 1;
         std::println("    {} : L{} ~ L{} ({} layers, {})",
@@ -178,8 +178,8 @@ void GraphScheduler::print_summary(
         total_weight += c.weight_bytes;
         total_act += c.activation_bytes;
     }
-    std::println("\n  Total: {} weights, {} activations(estimate)",format_bytes(total_weight), format_bytes(total_act));
-    std::println("==============================\n");
+    std::println("  Total: {} weights, {} activations(estimate)",format_bytes(total_weight), format_bytes(total_act));
+    std::println("================================================");
 }
 
 // ========== 6. 插入跨设备拷贝边 ==========
@@ -239,41 +239,36 @@ void GraphScheduler::insert_copy_edges(ComputeGraph& graph) const {
     }
     if (deduped > 0) {
         graph.rebuild_order();
-        std::println("  Inserted {} copy nodes ({} deduplicated refs)",cache.size(), deduped);
+        std::println("Inserted {} copy nodes ({} deduplicated refs)",cache.size(), deduped);
     }
 }
-
-// ========== 7. 创建内存池（在 insert_copy_edges 之后，重新统计实际用量） ==========
-struct DeviceMemUsage {
-    size_t weight_bytes = 0;
-    size_t activation_bytes = 0;
-};
 
 void GraphScheduler::create_memory_pools(const ComputeGraph& graph,const std::vector<BackendInfo>& devices) {
     std::unordered_map<Device, size_t> dev_id_map;
     for (const auto& d : devices) {
         dev_id_map[d.device] = d.id;
     }
-
+    struct DeviceMemUsage {
+        size_t weight_bytes = 0;
+        size_t activation_bytes = 0;
+    };
     std::unordered_map<Device, DeviceMemUsage> usage;
     for (auto* t : graph.get_all_tensors()) {
-        if (t->type == TensorType::TENSOR_TYPE_VIEW) continue;
-        size_t b = t->bytes();
+        if (t->type == TensorType::TENSOR_TYPE_VIEW)
+            continue;
         if (t->type == TensorType::TENSOR_TYPE_WEIGHT) {
-            usage[t->device].weight_bytes += b;
+            usage[t->device].weight_bytes += t->bytes();
         } else {
-            usage[t->device].activation_bytes += b;
+            usage[t->device].activation_bytes += t->bytes_at(config_.max_seq_len);
         }
     }
 
     for (auto& [dev, u] : usage) {
         size_t dev_id = dev_id_map[dev];
         size_t act_cap = u.activation_bytes * config_.activation_pool_factor;
-        if (act_cap < 64ULL << 20) act_cap = 64ULL << 20;
-
-        memory_->get_or_create(dev, dev_id, u.weight_bytes, act_cap, 0);
-        std::println("  [mem] {}:{}  weight_pool={}  activation_pool={}",
-                     device_to_string(dev), dev_id,
-                     format_bytes(u.weight_bytes), format_bytes(act_cap));
+        if (act_cap < 64ULL << 20) 
+            act_cap = 64ULL << 20;
+        this->mmanager_->get_or_create(dev, dev_id, u.weight_bytes, act_cap, 0);
+        std::println("{}:{}  weight_pool={}  activation_pool={}",device_to_string(dev), dev_id,format_bytes(u.weight_bytes), format_bytes(act_cap));
     }
 }

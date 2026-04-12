@@ -3,52 +3,50 @@
 #include "gguf_parser.h"
 #include "model/model.h"
 #include "core/scheduler.h"
+#include "core/executor.h"
 
 int main() {
     DeviceManager::instance().print_devices();
 
     GGUFParser parser("models/Qwen3-0.6B-BF16.gguf");
-    GGUFInfo info = parser.parse();
-    // info.print_info();
 
-    auto model = ModelFactory::CreateFromGGUF(info);
-    
-    ComputeGraph& graph = model->build_graph(info);
+    parser.info().print_info();
 
-    GraphScheduler scheduler(graph);
-    
+    std::unique_ptr<ModelBase> model = ModelFactory::CreateFromGGUF(parser.info());
+
+    ComputeGraph& graph = model->build_graph(parser.info());
+
+    constexpr int64_t runtime_max_seq = 2048; // 一个合理的默认值，实际使用时可以根据模型和需求调整
+
+    GraphScheduler::Config sched_cfg(0.1, 0, runtime_max_seq, 1.2f);
+
+    GraphScheduler scheduler(graph, sched_cfg);
+
     scheduler.schedule(DeviceManager::instance().get_devices());
 
     scheduler.export_dot("qwen3_graph.dot");
 
+    std::unique_ptr<MemoryManager>& manager = scheduler.mmanager();
 
-//     scheduler.allocate_all_weights();   // 预分配权重内存，减少后续迁移开销
+    manager->load_weights(parser, scheduler.graph());
 
-//     // 获取调度器的内存管理器
-//     Executor executor(&scheduler);
-    
-//     std::vector<int> prompt = {12345, 67890}; // 示例token IDs
-//     int max_tokens = 100;
-//     // TODO: 创建输入张量并开始推理循环
-//     for (int step = 0; step < 1; ++step) {  // 暂时只执行1步用于测试
-//         std::println("\n--- Step {} ---", step);
+    // ========== 自回归生成 ==========
+    Executor executor(scheduler);
 
-//         // 执行前向传播（按照拓扑序执行，不是按子图顺序！）
-//         executor.execute(graph_root);
+    std::vector<int32_t> prompt = {151644, 872, 198};
 
-//         // 采样下一个token
-//         // int next_token = sample_from_logits(graph_root);
+    try {
+        auto output = executor.generate(prompt, 10);
 
-//         // 更新输入
-//         // input_ids = next_token;
+        std::println("Generated {} tokens", output.size());
+    } catch (const std::exception& e) {
+        std::println("Executor error: {}", e.what());
+    }
+    // 把output解析成文本（需要tokenizer，这里暂时不实现）
 
-//         // 清理临时张量
-//         // scheduler.cleanup_temp_tensors();
+    // std::string output_text = "[decoded text here]";
 
-//         // 检查结束条件
-//         // if (next_token == eos_token) break;
-//     }
 
-//     std::println("\n=== Inference completed ===");
+    scheduler.mmanager()->print_all_usage();
     return 0;
 }

@@ -149,7 +149,7 @@ inline std::string gguf_type_to_string(GGUFType type) {
     }
 }
 
-// 辅助函数：获取数据类型的字节大小
+// 辅助函数：获取数据类型的字节大小(byte)
 inline size_t data_type_size(DataType dtype) noexcept {
     switch (dtype) {
         case DataType::GGML_TYPE_F32:     return 4;

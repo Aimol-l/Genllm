@@ -1,6 +1,7 @@
 #pragma once
 #include <memory>
 #include <vector>
+#include <string>
 #include "graph.hpp"
 #include "backend/backend.h"
 #include "utils/utils.hpp"
@@ -11,9 +12,10 @@ public:
     struct Config {
         double memory_headroom;
         size_t kv_cache_per_layer;
-        size_t activation_pool_factor;
-        Config(double head = 0.1, size_t kv = 0, size_t act_factor = 2)
-            : memory_headroom(head), kv_cache_per_layer(kv), activation_pool_factor(act_factor) {}
+        int64_t max_seq_len = 1;       // 动态维度(-1)的解析值，用于激活池大小估算
+        float activation_pool_factor;  // 激活内存池大小 = 实际激活内存需求 * activation_pool_factor。比实际需求大一点点。
+        Config(double head = 0.1, size_t kv = 0, int64_t seq = 1, float act_factor = 1.2f)
+            : memory_headroom(head), kv_cache_per_layer(kv), max_seq_len(seq), activation_pool_factor(act_factor) {}
     };
     struct LayerCost {
         int layer_id = -1;
@@ -36,19 +38,21 @@ public:
     };
     explicit GraphScheduler(ComputeGraph cg, Config cfg = {})
         : graph_(std::move(cg)), config_(cfg) {
-        memory_ = std::make_unique<MemoryManager>();
+        mmanager_ = std::make_unique<MemoryManager>();
     }
 
     void schedule(const std::vector<BackendInfo>& devices);
+
     const std::vector<LayerAssignment>& get_assignments() const { return assignments_; }
-    std::unique_ptr<MemoryManager>& memory() { return memory_; }
-    const std::unique_ptr<MemoryManager>& memory() const { return memory_; }
+    std::unique_ptr<MemoryManager>& mmanager() { return mmanager_; }
+    const std::unique_ptr<MemoryManager>& mmanager() const { return mmanager_; }
     void export_dot(const std::string& path) const { graph_.export_dot(path); }
 
+    const ComputeGraph& graph() const { return graph_; }
 private:
     Config config_;
     ComputeGraph graph_;
-    std::unique_ptr<MemoryManager> memory_;
+    std::unique_ptr<MemoryManager> mmanager_;
     std::vector<LayerAssignment> assignments_;
 
     void assign_global_nodes(ComputeGraph& graph, Device cpu) const;

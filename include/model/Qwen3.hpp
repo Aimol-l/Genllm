@@ -9,10 +9,26 @@ struct Qwen3Params{
     float templature = 0.8;
 };
 
+// Qwen3 模型结构参数（从 GGUF metadata 解析）
+struct Qwen3Config {
+    int hidden_size = 1024;
+    int num_layers = 28;
+    int num_heads = 16;
+    int num_kv_heads = 8;
+    int head_dim = 128;
+    int intermediate_size = 3072;
+    int vocab_size = 0;
+    int max_seq_len = 40960;
+    float rms_norm_eps = 1e-6f;
+    float rope_theta = 1000000.0f;
+};
+
 // Qwen3 模型类
 class Qwen3Model : public ModelBase {
 private:
     Qwen3Params params;
+    Qwen3Config config_;
+    void parse_config(const GGUFInfo& info);
     Tensor* build_qwen3_layer(
         Tensor* input,           // [batch, seq_len, hidden_size]
         const GGUFInfo& info,
@@ -24,7 +40,7 @@ private:
         int intermediate_size,
         float rms_norm_eps,
         Tensor* rope_cos,
-        Tensor* rope_sin
+        Tensor* rope_sin 
     );
 public:
     Qwen3Model() {
@@ -46,7 +62,6 @@ public:
     void print_info() override;
     void set_params(void*) override;
     ComputeGraph& build_graph(const GGUFInfo& info) override;
-
-    // 加载权重（使用内存管理器）
-    // void load_weights(GGUFInfo& info, MemoryManager* mem_manager) override;
+    [[nodiscard]] const Qwen3Config& config() const { return config_; }
+    int64_t max_seq_len() const override { return config_.max_seq_len; }
 };

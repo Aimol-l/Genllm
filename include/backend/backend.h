@@ -15,7 +15,7 @@
 // 设备能力描述
 struct BackendInfo {
     size_t id;
-    enum Device device;              // CPU/CUDA_0/CUDA_1/SYCL/VULKAN...
+    enum Device device;         // CPU/CUDA_0/CUDA_1/SYCL/VULKAN...
     size_t total_memory;        // 总内存/显存（字节）
     size_t reserved_memory;     // 系统/框架预留（字节）
     double compute_power;       // 相对算力（如 TFLOPS），用于负载均衡

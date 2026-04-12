@@ -10,10 +10,15 @@ struct MemoryBlock {
 class IMemoryResource {
 public:
     virtual ~IMemoryResource() = default;
+    // 核心
     virtual void* allocate(size_t size, size_t alignment) = 0;
     virtual void deallocate(void* ptr, size_t size) = 0;
-    virtual Device device() const = 0;
+
     virtual size_t id() const = 0;
+    virtual Device device() const = 0;
+
+    // virtual size_t allocated_size() const = 0; 
+    // virtual size_t available_size() const = 0;
 };
 
 class CpuMemoryResource : public IMemoryResource {
