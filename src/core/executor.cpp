@@ -106,8 +106,6 @@ std::vector<int32_t> Executor::generate(
         output.push_back(next);
         token_cache.push_back(next);
 
-        break; // --- IGNORE --- 目前先测试 prefill，decode 循环的逻辑后续再完善
-        
         this->decode_step(token_cache);
     }
     return output;

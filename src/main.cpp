@@ -18,7 +18,6 @@ int main() {
 
     ComputeGraph& graph = model->build_graph(parser.info()); // 目前是batch固定1，seq_len动态的。
 
-
     GraphScheduler::Config sched_cfg{
         .vocab_size = model->vocab_size(),
         .kv_cache_per_layer = 0,    // 目前不区分层，统一估算一个值。实际实现时可以根据模型结构区分不同层的KV cache需求。
@@ -47,12 +46,12 @@ int main() {
 
     try {
 
-        std::vector<int32_t> output = executor.generate(prompt_ids, 10);
+        std::vector<int32_t> output = executor.generate(prompt_ids, 5);
 
         std::string gen = tokenizer.decode(output);
 
         std::println("Output IDs: {}", output);
-        std::println("Generated: \"{}\"", gen);
+        std::println("Generated: {}", gen);
 
     } catch (const std::exception& e) {
 
