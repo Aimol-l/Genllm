@@ -48,6 +48,11 @@ void MemoryPool::reset() {
     this->used_ = 0;
 }
 
+void MemoryPool::reset_to(size_t pos) {
+    this->cursor_ = pos;
+    this->used_ = pos;
+}
+
 std::string MemoryPool::format_usage() const {
     return std::format("{}:{} used={:.1f}/{:.1f} MB peak={:.1f} MB ({:.1f}%)",
         device_to_string(device()), device_id(),

@@ -1,13 +1,7 @@
 #pragma once
-
-#include "model/model.h"
 #include <cstddef>
 
-
-struct Qwen3Params{
-    size_t top_p = 10;
-    float templature = 0.8;
-};
+#include "model/model.h"
 
 // Qwen3 模型结构参数（从 GGUF metadata 解析）
 struct Qwen3Config {
@@ -26,7 +20,6 @@ struct Qwen3Config {
 // Qwen3 模型类
 class Qwen3Model : public ModelBase {
 private:
-    Qwen3Params params;
     Qwen3Config config_;
     void parse_config(const GGUFInfo& info);
     Tensor* build_qwen3_layer(
@@ -60,8 +53,10 @@ public:
     Qwen3Model& operator=(Qwen3Model&&) noexcept = default;
 
     void print_info() override;
-    void set_params(void*) override;
     ComputeGraph& build_graph(const GGUFInfo& info) override;
     [[nodiscard]] const Qwen3Config& config() const { return config_; }
     int64_t max_seq_len() const override { return config_.max_seq_len; }
+
+    size_t vocab_size() const override{ return config_.vocab_size; }
+
 };

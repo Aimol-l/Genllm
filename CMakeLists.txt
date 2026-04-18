@@ -8,11 +8,16 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# CUDA 使用 C++20（nvcc 不完全支持 C++23 dialect）
+set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_EXTENSIONS OFF)
+
 set(THIS_PROJECT_NAME "main")
 
 project(
     ${THIS_PROJECT_NAME}
-    LANGUAGES C CXX
+    LANGUAGES C CXX CUDA
     DESCRIPTION "test for gguf parser"
 )
 
@@ -22,6 +27,7 @@ file(GLOB SRC_FILES
     CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/src/*.cpp"
     "${PROJECT_SOURCE_DIR}/src/*/*.cpp"
+    "${PROJECT_SOURCE_DIR}/src/*/*/*.cpp"
 )
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
@@ -44,12 +50,28 @@ if(BACKEND_CUDA)
 
     find_package(CUDAToolkit REQUIRED)
 
+    # Collect .cu source files
+    file(GLOB CUDA_FILES
+        CONFIGURE_DEPENDS
+        "${PROJECT_SOURCE_DIR}/src/backend/cuda/*.cu"
+    )
+
     list(FILTER SRC_FILES EXCLUDE REGEX "backend_cuda\\.cpp$")
-    add_executable(${THIS_PROJECT_NAME} ${SRC_FILES} "${PROJECT_SOURCE_DIR}/src/backend/backend_cuda.cpp")
+    # Exclude .cu files from SRC_FILES (they are compiled separately as CUDA)
+    list(FILTER SRC_FILES EXCLUDE REGEX "\\.cu$")
+
+    add_executable(${THIS_PROJECT_NAME} ${SRC_FILES}
+        "${PROJECT_SOURCE_DIR}/src/backend/backend_cuda.cpp"
+        ${CUDA_FILES}
+    )
 
     target_compile_definitions(${THIS_PROJECT_NAME} PRIVATE BACKEND_CUDA)
     target_link_libraries(${THIS_PROJECT_NAME} PRIVATE CUDA::cudart)
+
+    set_target_properties(${THIS_PROJECT_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 else()
     list(FILTER SRC_FILES EXCLUDE REGEX "backend_cuda\\.cpp$")
+    # Exclude .cu files when CUDA is disabled
+    list(FILTER SRC_FILES EXCLUDE REGEX "\\.cu$")
     add_executable(${THIS_PROJECT_NAME} ${SRC_FILES})
 endif()

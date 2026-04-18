@@ -96,7 +96,6 @@ enum class OperationType:uint8_t {
     OP_TYPE_GELU         ,
     OP_TYPE_SILU         ,
     OP_TYPE_RELU         ,
-    OP_TYPE_GET_ROWS     ,
     OP_TYPE_DIAG_MASK_INF,
     OP_TYPE_POOL_2D      ,
     OP_TYPE_UPSCALE      ,
@@ -105,7 +104,7 @@ enum class OperationType:uint8_t {
     OP_TYPE_PLACEHOLDER  ,
     OP_TYPE_EMBEDDING    ,
     OP_TYPE_LINEAR       ,
-    OP_TYPE_APPLY_ROPE   ,
+    OP_TYPE_APPLY_ROPE,
     OP_TYPE_SDPA,
     OP_TYPE_TOKENIZE,
     OP_TYPE_SAMPLING,
@@ -211,7 +210,6 @@ inline std::string operation_type_to_string(OperationType op) {
         case OperationType::OP_TYPE_GELU:          return "GELU";
         case OperationType::OP_TYPE_SILU:          return "SiLU";
         case OperationType::OP_TYPE_RELU:          return "ReLU";
-        case OperationType::OP_TYPE_GET_ROWS:      return "GetRows";
         case OperationType::OP_TYPE_DIAG_MASK_INF: return "DiagMaskInf";
         case OperationType::OP_TYPE_POOL_2D:       return "Pool2D";
         case OperationType::OP_TYPE_UPSCALE:       return "Upscale";

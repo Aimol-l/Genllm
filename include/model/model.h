@@ -24,7 +24,7 @@ public:
         // todo...
     }
     virtual void print_info() = 0;
-    virtual void set_params(void*) = 0;
+    virtual size_t vocab_size() const = 0;
     virtual ComputeGraph& build_graph(const GGUFInfo&) = 0;
     virtual int64_t max_seq_len() const { return 1; }
 };

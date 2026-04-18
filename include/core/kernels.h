@@ -2,9 +2,6 @@
 #include "core/tensor.hpp"
 
 namespace kernel {
-    // 统一签名: void xxx(Tensor* out)
-    // 从 out->src[] 读输入，写 out->data
-    // 不负责内存分配，由 Executor 处理
 
     void add(Tensor* out);
     void sub(Tensor* out);
@@ -31,13 +28,15 @@ namespace kernel {
 
     void embedding(Tensor* out);
     void apply_rope(Tensor* out);
+    
     void sdpa(Tensor* out);
-    void flash_attn(Tensor* out);
+    void attention(Tensor* out);
+    void flash_attention(Tensor* out);
 
-    void get_rows(Tensor* out);
     void concat(Tensor* out);
     void repeat(Tensor* out);
 
     void rope_cache(Tensor* out);
     void sampling(Tensor* out);
+    
 }

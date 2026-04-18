@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <memory>
 #include <vector>
 #include <string>
@@ -10,12 +11,15 @@
 class GraphScheduler {
 public:
     struct Config {
-        double memory_headroom;
+        size_t vocab_size = 0;           //token表的大小
         size_t kv_cache_per_layer;
-        int64_t max_seq_len = 1;       // 动态维度(-1)的解析值，用于激活池大小估算
+
+        int64_t max_seq_len = 1;         //动态维度(-1)的解析值，用于激活池大小估算
+
+        float top_p = 0.9f;              // 采样时的 top-p 参数
+        float temperature = 0.8f;        // 采样时的 temperature 参数
+        float memory_headroom;
         float activation_pool_factor;  // 激活内存池大小 = 实际激活内存需求 * activation_pool_factor。比实际需求大一点点。
-        Config(double head = 0.1, size_t kv = 0, int64_t seq = 1, float act_factor = 1.2f)
-            : memory_headroom(head), kv_cache_per_layer(kv), max_seq_len(seq), activation_pool_factor(act_factor) {}
     };
     struct LayerCost {
         int layer_id = -1;
@@ -36,7 +40,7 @@ public:
             : start_layer(s), end_layer(e), device(d),
               total_bytes(b), weight_bytes(w), activation_bytes(a) {}
     };
-    explicit GraphScheduler(ComputeGraph cg, Config cfg = {})
+    explicit GraphScheduler(ComputeGraph cg, Config cfg)
         : graph_(std::move(cg)), config_(cfg) {
         mmanager_ = std::make_unique<MemoryManager>();
     }
@@ -49,6 +53,12 @@ public:
     void export_dot(const std::string& path) const { graph_.export_dot(path); }
 
     const ComputeGraph& graph() const { return graph_; }
+
+    size_t vocab_size() const { return config_.vocab_size; }
+    int64_t max_seq_len() const { return config_.max_seq_len; }
+    float top_p() const { return config_.top_p; }
+    float temperature() const { return config_.temperature; }
+    
 private:
     Config config_;
     ComputeGraph graph_;

@@ -50,12 +50,11 @@ public:
         return t;
     }
     // ──────────────────────────────────────────────────────────────────
-    // linear: y = x @ weight.T
+    // linear: y = x @ weight
     // ──────────────────────────────────────────────────────────────────
     static Tensor* linear(
         Tensor* input, 
         const TensorInfo* weight_info,
-        bool transpose = false,
         const std::string& name = "",
         int32_t layer_id = -1
     ){
@@ -68,13 +67,12 @@ public:
         auto out_dims = infer_linear_output(
             {input->dims.begin(), input->dims.end()},  // 传整个数组
             weight_info->dimensions,
-            transpose
+            false  // 不转置，weight shape: [in_features, out_features]
         );
         std::copy(out_dims.begin(), out_dims.end(), t->dims.begin());
         t->src[0] = input;
-        t->src[1] = weight_placeholder(weight_info, weight_info->name,layer_id);
-        t->op_params[0] = transpose ? 1 : 0;  // 转置标志
-        compute_strides(t);
+        t->src[1] = OpFactory::weight_placeholder(weight_info, weight_info->name,layer_id);
+        OpFactory::compute_strides(t);
         return t;
     }
 
@@ -82,19 +80,27 @@ public:
         Tensor* input_ids,
         const TensorInfo* weight_info,
         const std::string& name = "",
-        int32_t layer_id = -1
+        int32_t layer_id = -1,
+        bool transpose = false
     ){
         Tensor* t = new Tensor();
-        t->name = name;
+        t->name  = name;
         t->dtype = weight_info->dtype;  // eg:BF16
-        t->type = TensorType::TENSOR_TYPE_ACTIVATION;
+        t->type  = TensorType::TENSOR_TYPE_ACTIVATION;
         t->op_type = OperationType::OP_TYPE_EMBEDDING;
+
         t->dims[0] = input_ids->dims[0];  // batch
         t->dims[1] = input_ids->dims[1];  // seq_len
-        t->dims[2] = weight_info->dimensions[1];  // hidden_size
-        t->src[0] = input_ids;
-        t->src[1] = OpFactory::weight_placeholder(weight_info, weight_info->name,layer_id);
+
+        t->dims[2] = transpose ? weight_info->dimensions[0]:weight_info->dimensions[1];  // hidden_size
+
+        t->src[0]  = input_ids;
+        t->src[1]  = OpFactory::weight_placeholder(weight_info, weight_info->name,layer_id);
+
+        t->op_params[0] = transpose ? 1 : 0;  // 转置标志
+
         OpFactory::compute_strides(t);
+
         return t;
     }
     // ──────────────────────────────────────────────────────────────────
@@ -159,7 +165,7 @@ public:
         cos_tensor->op_params[0] = theta;
         cos_tensor->op_params[1] = head_dim;
         cos_tensor->op_params[2] = max_seq_len;
-        return {sin_tensor,cos_tensor};
+        return {cos_tensor, sin_tensor};
     }
     // y = x * sigmoid(x)
     static Tensor* silu(Tensor* input, const std::string& name = "", int32_t layer_id = -1){
@@ -198,7 +204,7 @@ public:
         t->src[1] = b;
         t->data = nullptr;  // 执行时分配
         t->offset = 0;
-        compute_strides(t);
+        OpFactory::compute_strides(t);
         return t;
     }
     // 

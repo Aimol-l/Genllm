@@ -14,6 +14,7 @@ private:
     std::unique_ptr<IMemoryResource> resource_;
 public:
     void reset();
+    void reset_to(size_t pos);  // 回退到指定位置（保留 pos 之前的数据）
     explicit MemoryPool(std::unique_ptr<IMemoryResource> resource,size_t capacity,std::string name);
     ~MemoryPool(){
         if (buffer_ && capacity_ > 0) {
@@ -42,7 +43,7 @@ struct DevicePools {
     std::unique_ptr<MemoryPool> kv_cache;
     void reset_activation() {
         if (activation) {
-            std::println("  [mem] reset activation pool on dev {}",activation->format_usage());
+            std::println("Reset activation pool on dev {}",activation->format_usage());
             activation->reset();
         }
     }

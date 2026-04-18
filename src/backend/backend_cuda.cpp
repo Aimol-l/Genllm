@@ -53,8 +53,13 @@ BackendInfo CUDABackendProvider::get_backend_info(int device_id) const {
 
     double compute_power = 0.0;
     int sm = prop.major * 10 + prop.minor;
-    double clock_ghz = static_cast<double>(prop.clockRate) / 1e6;
+
+    // CUDA 12+ 弃用了 prop.clockRate，用 cudaDeviceGetAttribute 替代
+    int clock_rate_khz = 0;
+    cudaDeviceGetAttribute(&clock_rate_khz, cudaDevAttrClockRate, device_id);
+    double clock_ghz = static_cast<double>(clock_rate_khz) / 1e6;
     size_t sm_count = prop.multiProcessorCount;
+
     if (sm >= 80) {
         compute_power = 2.0 * sm_count * clock_ghz;
     } else if (sm >= 70) {
@@ -66,8 +71,13 @@ BackendInfo CUDABackendProvider::get_backend_info(int device_id) const {
     }
 
     double bandwidth = 0.0;
-    if (prop.major >= 3) {
-        bandwidth = 2.0 * prop.memoryClockRate * 1e3 * (prop.memoryBusWidth / 8) / 1e9;
+    // CUDA 12+ 弃用了 prop.memoryClockRate，用 cudaDeviceGetAttribute 替代
+    int mem_clock_khz = 0;
+    int mem_bus_bits = 0;
+    cudaDeviceGetAttribute(&mem_clock_khz, cudaDevAttrMemoryClockRate, device_id);
+    cudaDeviceGetAttribute(&mem_bus_bits, cudaDevAttrGlobalMemoryBusWidth, device_id);
+    if (mem_bus_bits > 0) {
+        bandwidth = 2.0 * mem_clock_khz * 1e3 * (mem_bus_bits / 8) / 1e9;
     }
 
     return BackendInfo{

@@ -66,7 +66,6 @@ private:
     std::ifstream file_;
     GGUFInfo info_;
     uint64_t data_offset_ = 0;
-    const std::vector<std::string> transpose_tensor_names = {"token_embd.weight"};
 public:
     explicit GGUFParser(const std::string& filename);
     ~GGUFParser();

@@ -94,7 +94,7 @@ std::vector<GraphScheduler::LayerAssignment> GraphScheduler::assign_layers(
         bool switch_dev = false;
         if (i > 0 && accumulated > 0) {
             size_t budget = static_cast<size_t>(
-                compute_devs[dev_idx]->available_memory() * (1.0 - config_.memory_headroom));
+                compute_devs[dev_idx]->available_memory() * (1.0f - config_.memory_headroom));
             if (accumulated + layer_bytes > budget ||
                 (accumulated >= per_dev && dev_idx + 1 < static_cast<int>(n))) {
                 switch_dev = true;
@@ -168,7 +168,7 @@ void GraphScheduler::print_summary(
     std::println("  Device assignments:");
     for (const auto& a : this->assignments_) {
         int n_layers = a.end_layer - a.start_layer + 1;
-        std::println("    {} : L{} ~ L{} ({} layers, {})",
+        std::println("    {} : L:{} ~ L:{} ({} layers, {})",
                      device_to_string(a.device),
                      a.start_layer, a.end_layer, n_layers,
                      format_bytes(a.total_bytes));
