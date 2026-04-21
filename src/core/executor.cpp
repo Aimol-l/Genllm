@@ -2,7 +2,6 @@
 #include "core/kernels.h"
 #include "model/op_factory.hpp"
 #include "utils/bfloat16.hpp"
-#include "utils/dtype_traits.hpp"
 #include "utils/tools.hpp"
 
 #include <cstddef>
@@ -23,10 +22,11 @@ Executor::Executor(GraphScheduler& scheduler)
     : scheduler_(scheduler)
     , memory_(*scheduler_.mmanager())
     , graph_(scheduler_.graph())
+    , pool_(std::make_unique<ThreadPool>(std::thread::hardware_concurrency()))
 {
     for (auto* t : graph_.get_all_tensors()) {
         Device dev = t->device;
-        if (dev_id_map_.contains(dev)) 
+        if (dev_id_map_.contains(dev))
             continue;
         DevicePools* pools = memory_.get(dev, 0);
         if (pools && pools->activation) {
@@ -34,19 +34,26 @@ Executor::Executor(GraphScheduler& scheduler)
         }
     }
 
-    // 拆分 execution_order：CACHE 类型 → persistent，其余 → step
-    for (Tensor* t : graph_.get_execution_order()) {
-        if (t->type == TensorType::TENSOR_TYPE_CACHE) {
-            persistent_ops_.push_back(t);
-        } else {
-            step_ops_.push_back(t);
+    // 从 execution_levels_ 拆分：CACHE 类型 → persistent，其余可计算节点 → step
+    for (const auto& level : graph_.get_execution_levels()) {
+        std::vector<Tensor*> persistent_level;
+        std::vector<Tensor*> step_level;
+        for (Tensor* t : level) {
+            if (!t->is_computed()) continue;
+            if (t->type == TensorType::TENSOR_TYPE_CACHE) {
+                persistent_level.push_back(t);
+            } else {
+                step_level.push_back(t);
+            }
         }
+        if (!persistent_level.empty()) persistent_levels_.push_back(std::move(persistent_level));
+        if (!step_level.empty()) step_levels_.push_back(std::move(step_level));
     }
 }
 void Executor::forward() {
     // 绑定 input tensor
     for (auto* t : graph_.get_all_tensors()) {
-        if (t->type != TensorType::TENSOR_TYPE_INPUT) 
+        if (t->type != TensorType::TENSOR_TYPE_INPUT)
             continue;
         auto it = this->inputs_.find(t->name);
         if (it == this->inputs_.end()) {
@@ -57,9 +64,11 @@ void Executor::forward() {
     }
     // Phase 1: 执行 persistent ops（如 rope_cos/sin），只需算一次
     if (!this->persistent_computed_) {
-        for (Tensor* t : persistent_ops_) {
-            this->execute_tensor(t);
-            // ops::println(t);
+        for (const auto& level : persistent_levels_) {
+            for (Tensor* t : level) {
+                pool_->submit([this, t]() { this->execute_tensor(t); });
+            }
+            pool_->wait();
         }
         // 记录各设备 activation pool 的 cursor，后续 reset 不能超过这个位置
         for (auto& [dev, id] : dev_id_map_) {
@@ -70,11 +79,13 @@ void Executor::forward() {
         }
         this->persistent_computed_ = true;
     }
-    // Phase 2: reset 到 persistent 之后，执行 step ops
+    // Phase 2: reset 到 persistent 之后，按 level 并行执行 step ops
     this->reset_step_activations();
-    for (Tensor* t : step_ops_) {
-        this->execute_tensor(t);
-        // ops::println(t);
+    for (const auto& level : step_levels_) {
+        for (Tensor* t : level) {
+            pool_->submit([this, t]() { this->execute_tensor(t); });
+        }
+        pool_->wait();
     }
 }
 void Executor::execute_tensor(Tensor* t) {
@@ -276,14 +287,11 @@ Tensor* Executor::find_tensor(const std::string& name) const {
 void Executor::allocate_output(Tensor* t) {
     MemoryPool* pool = get_act_pool(t->device);
     if (!pool) {
-        throw std::runtime_error(std::format(
-            "Executor: no activation pool for {} tensor '{}'",
-            device_to_string(t->device), t->name));
+        throw std::runtime_error(std::format("Executor: no activation pool for {} tensor '{}'",device_to_string(t->device), t->name));
     }
     size_t nbytes = t->bytes();
     if (nbytes == 0) {
-        throw std::runtime_error(std::format(
-            "Executor: tensor '{}' has 0 bytes (unresolved dims?)", t->name));
+        throw std::runtime_error(std::format("Executor: tensor '{}' has 0 bytes (unresolved dims?)", t->name));
     }
     MemoryBlock block = pool->allocate(nbytes, 64);
     t->data = block.ptr;
@@ -333,7 +341,7 @@ void Executor::execute_memcpy(Tensor* t) {
 }
 
 void Executor::dispatch_kernel(Tensor* t) {
-    auto start = std::chrono::steady_clock::now();
+    // auto start = std::chrono::steady_clock::now();
     switch (t->op_type) {
         case OperationType::OP_TYPE_RESHAPE: kernel::reshape(t) ; break;
         case OperationType::OP_TYPE_VIEW:
@@ -364,7 +372,11 @@ void Executor::dispatch_kernel(Tensor* t) {
         case OperationType::OP_TYPE_SAMPLING:   kernel::sampling(t);   break;
         default:   throw std::runtime_error(std::format("Executor: unhandled op_type '{}' for tensor '{}'",operation_type_to_string(t->op_type), t->name));
     }
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double, std::milli> duration = end - start;
-    std::println("{:<13} {:<20} {:<16} {:>10.1f}ms", operation_type_to_string(t->op_type), t->name, t->dims, duration.count());
+    // auto end = std::chrono::steady_clock::now();
+    // std::chrono::duration<double, std::milli> duration = end - start;
+    // static std::mutex log_mutex;
+    // {
+    //     std::lock_guard<std::mutex> lock(log_mutex);
+    //     std::println("{:<13} {:<20} {:<16} {:>10.1f}ms", operation_type_to_string(t->op_type), t->name, t->dims, duration.count());
+    // }
 }

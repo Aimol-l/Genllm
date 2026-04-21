@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <mutex>
 #include <print>
 #include "resource.h"
 
@@ -12,6 +13,7 @@ private:
     size_t cursor_ = 0;
     std::string name_;
     std::unique_ptr<IMemoryResource> resource_;
+    mutable std::mutex mutex_;
 public:
     void reset();
     void reset_to(size_t pos);  // 回退到指定位置（保留 pos 之前的数据）

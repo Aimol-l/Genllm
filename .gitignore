@@ -3,6 +3,7 @@ bin/
 build/
 dist/
 models/
+tests/__pycache__/
 
 *.o
 *.so

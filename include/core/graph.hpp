@@ -12,6 +12,7 @@ class ComputeGraph {
 private:
     std::vector<Tensor*> all_tensors_;
     std::vector<Tensor*> execution_order_;
+    std::vector<std::vector<Tensor*>> execution_levels_; // 按依赖层级分组，同层内节点可并行
     std::vector<Tensor*> external_outputs_;
     std::map<int, std::vector<Tensor*>> layer_groups_;
     int max_layer_ = -1;
@@ -47,36 +48,44 @@ private:
             }
         }
 
-        struct Entry { int layer; size_t seq; Tensor* t; };
-        auto cmp = [](const Entry& a, const Entry& b) {
-            if (a.layer != b.layer) return a.layer > b.layer;
-            return a.seq > b.seq;
-        };
-        std::priority_queue<Entry, std::vector<Entry>, decltype(cmp)> pq(cmp);
-
-        size_t seq = 0;
-        for (Tensor* t : all_tensors_) {
-            if (in_degree[t] == 0) pq.push({t->layer_id, seq++, t});
-        }
-
+        // 按层分组：同一 level 内的节点 in_degree 同时归零，互不依赖可并行
+        execution_levels_.clear();
         execution_order_.clear();
         layer_groups_.clear();
         max_layer_ = -1;
         size_t count = 0;
 
-        while (!pq.empty()) {
-            auto [lid, _, t] = pq.top(); pq.pop();
-            if (t->is_computed()) {
-                execution_order_.push_back(t);
-                layer_groups_[lid].push_back(t);
+        while (count < all_tensors_.size()) {
+            // 收集当前所有 in_degree==0 的节点作为同一 level
+            std::vector<Tensor*> level;
+            for (Tensor* t : all_tensors_) {
+                if (in_degree[t] == 0) {
+                    level.push_back(t);
+                }
             }
-            if (lid > max_layer_) max_layer_ = lid;
-            ++count;
-            auto range = fwd.equal_range(t);
-            for (auto it = range.first; it != range.second; ++it) {
-                if (--in_degree[it->second] == 0)
-                    pq.push({it->second->layer_id, seq++, it->second});
+            if (level.empty()) break; // 没有可执行的节点 → 存在环
+
+            // 层内按 layer_id 排序保持确定性
+            std::sort(level.begin(), level.end(), [](Tensor* a, Tensor* b) {
+                return a->layer_id < b->layer_id;
+            });
+
+            // 将该 level 的节点移除，更新依赖
+            for (Tensor* t : level) {
+                in_degree[t] = -1; // 标记已处理
+                if (t->is_computed()) {
+                    execution_order_.push_back(t);
+                    layer_groups_[t->layer_id].push_back(t);
+                }
+                if (t->layer_id > max_layer_) max_layer_ = t->layer_id;
+                ++count;
+                auto range = fwd.equal_range(t);
+                for (auto it = range.first; it != range.second; ++it) {
+                    if (in_degree[it->second] >= 0)
+                        --in_degree[it->second];
+                }
             }
+            execution_levels_.push_back(std::move(level));
         }
 
         if (count != all_tensors_.size()) {
@@ -99,6 +108,7 @@ public:
     ComputeGraph(ComputeGraph&& other) noexcept
         : all_tensors_(std::move(other.all_tensors_))
         , execution_order_(std::move(other.execution_order_))
+        , execution_levels_(std::move(other.execution_levels_))
         , external_outputs_(std::move(other.external_outputs_))
         , layer_groups_(std::move(other.layer_groups_))
         , max_layer_(other.max_layer_)
@@ -110,6 +120,7 @@ public:
         if (this != &other) {
             all_tensors_ = std::move(other.all_tensors_);
             execution_order_ = std::move(other.execution_order_);
+            execution_levels_ = std::move(other.execution_levels_);
             external_outputs_ = std::move(other.external_outputs_);
             layer_groups_ = std::move(other.layer_groups_);
             max_layer_ = other.max_layer_;
@@ -127,12 +138,14 @@ public:
     void clear() {
         all_tensors_.clear();
         execution_order_.clear();
+        execution_levels_.clear();
         external_outputs_.clear();
         layer_groups_.clear();
         max_layer_ = -1;
     }
 
     const std::vector<Tensor*>& get_execution_order()  const { return execution_order_; }
+    const std::vector<std::vector<Tensor*>>& get_execution_levels() const { return execution_levels_; }
     const std::vector<Tensor*>& get_all_tensors()       const { return all_tensors_; }
     const std::vector<Tensor*>& get_external_outputs()  const { return external_outputs_; }
     const std::map<int, std::vector<Tensor*>>& get_layer_groups() const { return layer_groups_; }
@@ -150,6 +163,7 @@ public:
 
     void rebuild_order() {
         execution_order_.clear();
+        execution_levels_.clear();
         layer_groups_.clear();
         max_layer_ = -1;
         topological_sort();

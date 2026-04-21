@@ -14,6 +14,7 @@ MemoryPool::MemoryPool(
 }
 
 MemoryBlock MemoryPool::allocate(size_t size, size_t alignment) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (size == 0) {
         return {nullptr, 0, 0};
     }
@@ -37,7 +38,7 @@ MemoryBlock MemoryPool::allocate(size_t size, size_t alignment) {
     this->cursor_ = aligned_cursor + size;
     this->used_ = aligned_cursor + size;
 
-    if (this->used_ > peak_) 
+    if (this->used_ > peak_)
         peak_ = this->used_;
 
     return block;

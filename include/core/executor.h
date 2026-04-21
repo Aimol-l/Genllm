@@ -2,7 +2,9 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <memory>
 #include "scheduler.h"
+#include "thread_pool.h"
 
 class Executor {
 private:
@@ -18,8 +20,9 @@ private:
     struct InputBinding { void* data; size_t size; };
     std::unordered_map<std::string, InputBinding> inputs_;
 
-    std::vector<Tensor*> persistent_ops_;  // 持久化节点，TENSOR_TYPE_CACHE 节点等
-    std::vector<Tensor*> step_ops_;        // 其余计算节点
+    std::unique_ptr<ThreadPool> pool_;  // 固定线程池，生命周期跟随 Executor
+    std::vector<std::vector<Tensor*>> persistent_levels_; // 持久化节点按层分组
+    std::vector<std::vector<Tensor*>> step_levels_;       // 其余计算节点按层分组
     
     std::unordered_map<Device, size_t> persistent_cursor_;
     std::unordered_map<std::string, std::array<int64_t, TENSOR_MAX_DIMS>> original_dims_;
