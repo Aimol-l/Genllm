@@ -155,7 +155,7 @@ void GraphScheduler::print_summary(
     const std::vector<LayerCost>& costs,
     const std::vector<BackendInfo>& devices) const
 {
-    std::println("=== GraphScheduler Summary ===");
+    std::println("=============GraphScheduler Summary=====================");
     std::println("  Per-layer cost estimate:");
     for (const auto& c : costs) {
         std::println("    L{:>3d}: weight={}  activation={}  kv_cache={}  total={}",
@@ -179,7 +179,7 @@ void GraphScheduler::print_summary(
         total_act += c.activation_bytes;
     }
     std::println("  Total: {} weights, {} activations(estimate)",format_bytes(total_weight), format_bytes(total_act));
-    std::println("================================================");
+    std::println("========================================================");
 }
 
 // ========== 6. 插入跨设备拷贝边 ==========

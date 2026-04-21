@@ -14,22 +14,30 @@ private:
     struct from_bits_t {};
     constexpr bfloat16_t(uint16_t b, from_bits_t) : bits_(b) {}
 
-     // Round to nearest even and truncate to bfloat16
+    // Round to nearest even and truncate to bfloat16
     static constexpr uint16_t float_to_bf16_bits(float f) {
         uint32_t bits = std::bit_cast<uint32_t>(f);
-        uint32_t sign = (bits >> 31) & 0x1;
+        uint32_t sign = bits >> 31;
         uint32_t exp  = (bits >> 23) & 0xFF;
         uint32_t mant = bits & 0x7FFFFF;
-        uint32_t mant_lo = bits & 0x7FFF;
-        uint32_t round_bit = (mant_lo >> 14) & 1;
-        uint32_t sticky_bits = mant_lo & 0x3FFF;
-        uint32_t round = (round_bit && (sticky_bits || (mant & 1))) ? 1 : 0;
-        uint32_t combined = ((exp << 7) | (mant >> 16)) + round;
-        if (combined >= 0x100) {
-            combined = 0;
-            exp = 0xFF;
+        if (exp == 0xFF) {
+            return (sign << 15) | 0x7F80 | ((mant != 0) ? 1 : 0);
         }
-        return (sign << 15) | static_cast<uint16_t>(combined);
+        if (exp == 0) {
+            return sign << 15;
+        }
+        uint32_t dropped = bits & 0xFFFF; // 完整截取低16位
+        uint32_t round_up = (dropped > 0x8000) || (dropped == 0x8000 && (mant & 0x10000));
+        uint32_t bf16_mant = (mant >> 16) + round_up;
+        uint32_t bf16_exp  = exp;
+        if (bf16_mant >= 0x80) { // BF16 尾数仅7位，最大 0x7F
+            bf16_exp++;
+            bf16_mant = 0;
+            if (bf16_exp >= 0xFF) {
+                return (sign << 15) | 0x7F80; // 溢出到 Infinity
+            }
+        }
+        return (sign << 15) | static_cast<uint16_t>((bf16_exp << 7) | bf16_mant);
     }
     static constexpr float bf16_bits_to_float(uint16_t bits) {
         uint32_t combined = (static_cast<uint32_t>(bits) << 16);

@@ -1,6 +1,8 @@
 #include "gguf_parser.h"
+#include <cassert>
+#include <cstddef>
 
-GGUFParser::GGUFParser(const std::string& filename) {
+GGUFParser::GGUFParser(const std::string& filename,bool pre_transpose) {
     file_.open(filename, std::ios::binary);
     if (!file_) {
         throw std::runtime_error("Failed to open file: " + filename);
@@ -10,6 +12,7 @@ GGUFParser::GGUFParser(const std::string& filename) {
         throw std::runtime_error("Invalid GGUF file: magic number mismatch (expected 'GGUF')");
     }
     this->info_ = parse();
+    this->info_.pre_transpose = pre_transpose;
 }
 
 GGUFParser::~GGUFParser() {
@@ -18,17 +21,46 @@ GGUFParser::~GGUFParser() {
     }
 }
 
-void GGUFParser::read_tensor_data(uint64_t tensor_offset, void* dst, size_t size) {
+void GGUFParser::read_tensor_data(uint64_t tensor_offset, void* dst, size_t size,const Tensor* tensor) {
     uint64_t abs_offset = data_offset_ + tensor_offset;
     file_.seekg(static_cast<std::streamoff>(abs_offset));
     if (!file_) {
         throw std::runtime_error(std::format(
             "GGUFParser: seek to {} (base={}) failed", abs_offset, data_offset_));
     }
-    file_.read(static_cast<char*>(dst), static_cast<std::streamsize>(size));
-    if (!file_) {
-        throw std::runtime_error(std::format(
-            "GGUFParser: read {} bytes at offset {} failed", size, abs_offset));
+
+    if (info_.pre_transpose) {
+        // 先读到临时缓冲区
+        std::vector<std::byte> buf(size); // dim=[tensor->dims[1],tensor->dims[0]],需要转置到 [tensor->dims[0],tensor->dims[1]]
+        file_.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(size));
+        if (!file_) {
+            throw std::runtime_error(std::format("GGUFParser: read {} bytes at offset {} failed", size, abs_offset));
+        }
+        // 判断张量维度数
+        int ndim = 0;
+        for (int i = 0; i < TENSOR_MAX_DIMS && tensor->dims[i] != 0; ++i) ++ndim;
+
+        if (ndim == 2) {
+            size_t esz = data_type_size(tensor->dtype);
+            int64_t rows = tensor->dims[1]; // 文件中的行数
+            int64_t cols = tensor->dims[0]; // 文件中的列数
+            auto* out = static_cast<std::byte*>(dst);
+            // 转置 [rows, cols] → [cols, rows]
+            for (int64_t i = 0; i < rows; ++i) {
+                for (int64_t j = 0; j < cols; ++j) {
+                    std::memcpy(out + (j * rows + i) * esz,
+                                buf.data() + (i * cols + j) * esz,
+                                esz);
+                }
+            }
+        } else {
+            std::memcpy(dst, buf.data(), size);
+        }
+    } else {
+        file_.read(static_cast<char*>(dst), static_cast<std::streamsize>(size));
+        if (!file_) {
+            throw std::runtime_error(std::format("GGUFParser: read {} bytes at offset {} failed", size, abs_offset));
+        }
     }
 }
 
@@ -52,9 +84,13 @@ GGUFInfo GGUFParser::parse() {
     // 解析张量信息
     info.tensors_info = this->parse_tensors_info(info.tensor_count);
 
-    constexpr size_t kAlignment = 32;
-    auto pos = file_.tellg();
-    data_offset_ = ((static_cast<uint64_t>(pos) + kAlignment - 1) / kAlignment) * kAlignment;
+
+    uint32_t alignment = 32;
+    uint64_t raw_offset = static_cast<uint64_t>(file_.tellg());
+    if (info_.metadata.contains("general.alignment")) {
+        alignment = info_.metadata["general.alignment"].get<uint32_t>();
+    }
+    data_offset_ = raw_offset + (alignment - raw_offset % alignment) % alignment; // 5951936
 
     return info;
 }
@@ -73,19 +109,15 @@ std::vector<TensorInfo> GGUFParser::parse_tensors_info(uint64_t tensor_count) {
     for (uint64_t i = 0; i < tensor_count; ++i) {
         TensorInfo info;
         info.name = read_string();
-        // if (std::find(transpose_tensor_names.begin(), transpose_tensor_names.end(), info.name) != transpose_tensor_names.end()) {
-        //     info.transpose = true;
-        // }else{
-        //     info.transpose = false;
-        // }
         uint32_t dims = read_uint32_le();
+        assert(dims == 1 || dims == 2); // 当前版本只支持1/2维张量
         info.dimensions.resize(dims);
         for (uint32_t d = 0; d < dims; d++) {
-            // if(info.transpose){
-            //     info.dimensions[dims - 1 - d] = static_cast<int64_t>(read_uint64_le());
-            // }else{
+            if(!this->info_.pre_transpose){ // 目前只对二维权重张量预转置，其他张量保持原维度顺序
                 info.dimensions[d] = static_cast<int64_t>(read_uint64_le());
-            // }
+            } else {
+                info.dimensions[dims - d -1] = static_cast<int64_t>(read_uint64_le()); // 反转维度顺序，更符合pytorch的行优先存储习惯
+            }
         }
         info.dtype = static_cast<DataType>(read_uint32_le());
         info.offset = read_uint64_le();

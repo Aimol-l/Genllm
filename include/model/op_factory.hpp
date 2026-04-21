@@ -56,7 +56,8 @@ public:
         Tensor* input, 
         const TensorInfo* weight_info,
         const std::string& name = "",
-        int32_t layer_id = -1
+        int32_t layer_id = -1,
+        bool transpose = false
     ){
         Tensor* t = new Tensor();
         t->name = name;
@@ -67,11 +68,13 @@ public:
         auto out_dims = infer_linear_output(
             {input->dims.begin(), input->dims.end()},  // 传整个数组
             weight_info->dimensions,
-            false  // 不转置，weight shape: [in_features, out_features]
+            transpose  // 不转置，weight shape: [in_features, out_features]
         );
         std::copy(out_dims.begin(), out_dims.end(), t->dims.begin());
         t->src[0] = input;
         t->src[1] = OpFactory::weight_placeholder(weight_info, weight_info->name,layer_id);
+        t->op_params[0] = transpose ? 1 : 0;  // 转置标志
+        
         OpFactory::compute_strides(t);
         return t;
     }
@@ -136,21 +139,20 @@ public:
         const std::string& name_prefix = "rope",
         int32_t layer_id = -1
     ){
-        int half_dim = head_dim / 2;
         auto make_cache_tensor = [&](const std::string& name) -> Tensor* {
             Tensor* t = new Tensor();
             t->name = name;
             t->dtype = dtype;
             t->type = TensorType::TENSOR_TYPE_CACHE;
             t->op_type = OperationType::OP_TYPE_ROPE_CACHE;
-            // 形状: [max_seq_len, half_dim]
+            // 形状: [max_seq_len, head_dim]
             t->dims[0] = max_seq_len;
-            t->dims[1] = half_dim;
-            for (int i = 2; i < TENSOR_MAX_DIMS; ++i) t->dims[i] = 1;
+            t->dims[1] = head_dim;
+            for (int i = 2; i < TENSOR_MAX_DIMS; ++i) t->dims[i] = 0;
             // 步长: 行优先 (字节跨度)
             size_t elem_bytes = data_type_size(dtype);
             t->strides[1] = elem_bytes;
-            t->strides[0] = half_dim * elem_bytes;
+            t->strides[0] = head_dim * elem_bytes;
             for (int i = 2; i < TENSOR_MAX_DIMS; ++i) t->strides[i] = 0;
             t->data = nullptr;
             t->offset = 0;
@@ -430,8 +432,8 @@ public:
     static std::tuple<Tensor*, Tensor*> apply_rope(
         Tensor* q,                    // Query: [B, n_heads, S, head_dim]
         Tensor* k,                    // Key:   [B, n_heads, S, head_dim]
-        Tensor* cos_cache,            // [max_seq, head_dim/2]
-        Tensor* sin_cache,            // [max_seq, head_dim/2]
+        Tensor* cos_cache,            // [max_seq, head_dim]
+        Tensor* sin_cache,            // [max_seq, head_dim]
         Tensor* position_ids = nullptr,  // optional [1, S]
         const std::string& name_suffix = "",
         int32_t layer_id = -1
@@ -450,10 +452,9 @@ public:
         if (head_dim <= 0 || head_dim % 2 != 0) {
             throw std::runtime_error("apply_rope: head_dim must be positive even number");
         }
-        int64_t half_dim = head_dim / 2;
         // 验证 cos/sin 缓存维度: [max_seq, half_dim]
-        if (cos_cache->dims[1] != half_dim || sin_cache->dims[1] != half_dim) {
-            throw std::runtime_error(std::format("apply_rope: cos/sin cache dim mismatch. expected half_dim={}, got {}", half_dim, cos_cache->dims[1]));
+        if (cos_cache->dims[1] != head_dim || sin_cache->dims[1] != head_dim) {
+            throw std::runtime_error(std::format("apply_rope: cos/sin cache dim mismatch. expected head_dim={}, got {}", head_dim, cos_cache->dims[1]));
         }
         auto make_rope_output = [&](Tensor* input, const std::string& name) -> Tensor* {
             Tensor* t = new Tensor();
@@ -479,13 +480,10 @@ public:
         Tensor* k_rope = make_rope_output(k, k->name + "_rope" + suffix);
 
         int32_t head_dim_i32 = static_cast<int32_t>(head_dim);
-        int32_t half_dim_i32 = static_cast<int32_t>(half_dim);
         
         q_rope->op_params[0] = head_dim_i32;
-        q_rope->op_params[1] = half_dim_i32;
 
         k_rope->op_params[0] = head_dim_i32;
-        k_rope->op_params[1] = half_dim_i32;
         return {q_rope, k_rope};
     }
     static void compute_strides(Tensor* t){

@@ -26,7 +26,7 @@ namespace kernel {
     void softmax(Tensor* out);
     void diag_mask_inf(Tensor* out);
 
-    void embedding(Tensor* out);
+    void embedding(Tensor* out); // cpu ok,
     void apply_rope(Tensor* out);
     
     void sdpa(Tensor* out);

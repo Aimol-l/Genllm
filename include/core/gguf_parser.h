@@ -4,6 +4,7 @@
 #include <fstream>
 #include <print>
 #include "3rd/json.hpp"  // nlohmann/json 库
+#include "tensor.hpp"
 #include "utils/utils.hpp"
 
 using Json = nlohmann::ordered_json;
@@ -25,6 +26,8 @@ struct TensorInfo {
 };
 // GGUF 头部信息结构
 struct GGUFInfo {
+    bool pre_transpose = false; // 是否预转置权重数据，开启后加载时直接转置，推理时免去转置开销
+    
     Json metadata;
     uint32_t version;
     uint64_t tensor_count;
@@ -44,7 +47,7 @@ struct GGUFInfo {
         return "unknown";
     }
     void print_info() const{
-        std::println("{:-<10}GGUF 文件信息{:-<10}", "", "");
+        std::println("{:-<14}GGUF 文件信息{:-<14}", "", "");
         std::println("gguf version:             {}", version);
         std::println("model arch:               {}", get_model_architecture());
         std::println("model name:               {}", get_model_name());
@@ -56,6 +59,7 @@ struct GGUFInfo {
         std::println("{:-<26} {:-<8} {:-<14}", "", "", "");
         for(const auto& info:tensors_info){
             std::println("{:<26} {:<8} {}", info.name, data_type_to_string(info.dtype), info.dimensions);
+            // std::println("(\"{}\",\"{}\",{}),", info.name, data_type_to_string(info.dtype), info.dimensions);
         }
         std::println("{:-<26} {:-<8} {:-<14}", "", "", "");
     }
@@ -67,7 +71,7 @@ private:
     GGUFInfo info_;
     uint64_t data_offset_ = 0;
 public:
-    explicit GGUFParser(const std::string& filename);
+    explicit GGUFParser(const std::string& filename,bool pre_transpose=false);
     ~GGUFParser();
     GGUFParser(const GGUFParser&) = delete;
     GGUFParser& operator=(const GGUFParser&) = delete;
@@ -75,7 +79,7 @@ public:
     GGUFParser& operator=(const GGUFParser&&) noexcept = delete;
     GGUFInfo& info() { return info_; }
     [[nodiscard]] uint64_t data_offset() const { return data_offset_; }
-    void read_tensor_data(uint64_t tensor_offset, void* dst, size_t size);
+    void read_tensor_data(uint64_t tensor_offset, void* dst, size_t size,const Tensor* tensor);
 private:
     GGUFInfo parse();
     uint8_t read_uint8_le();

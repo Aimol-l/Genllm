@@ -1,12 +1,14 @@
 #include "core/executor.h"
 #include "core/kernels.h"
 #include "model/op_factory.hpp"
+#include "utils/bfloat16.hpp"
 #include "utils/dtype_traits.hpp"
 #include "utils/tools.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <span>
 #include <stdexcept>
 #include <cstring>
 #include <algorithm>
@@ -57,6 +59,7 @@ void Executor::forward() {
     if (!this->persistent_computed_) {
         for (Tensor* t : persistent_ops_) {
             this->execute_tensor(t);
+            // ops::println(t);
         }
         // 记录各设备 activation pool 的 cursor，后续 reset 不能超过这个位置
         for (auto& [dev, id] : dev_id_map_) {
@@ -71,6 +74,7 @@ void Executor::forward() {
     this->reset_step_activations();
     for (Tensor* t : step_ops_) {
         this->execute_tensor(t);
+        // ops::println(t);
     }
 }
 void Executor::execute_tensor(Tensor* t) {
@@ -90,8 +94,10 @@ void Executor::execute_tensor(Tensor* t) {
 std::vector<int32_t> Executor::generate(
     const std::vector<int32_t>& prompt,
     int max_tokens,
-    int eos_token)
+    int32_t eos_tokens)
 {
+    // 构建快速查找集合
+
     std::vector<int32_t> output;
     std::vector<int32_t> token_cache = prompt;
 
@@ -101,8 +107,9 @@ std::vector<int32_t> Executor::generate(
     // Phase 2: Decode 循环
     for (int i = 0; i < max_tokens; ++i) {
         int32_t next = this->sample();  // 从当前 logits 采样
-        if (next == eos_token) break;
-        
+
+        if (eos_tokens == next) break;
+
         output.push_back(next);
         token_cache.push_back(next);
 
@@ -135,6 +142,7 @@ int32_t Executor::sample() const {
     if (!logits || !logits->data) {
         throw std::runtime_error("Executor::sample: logits tensor not computed");
     }
+    // ops::println(logits); // 调试用，打印 logits
 
     const float top_p = scheduler_.top_p();
     const float temperature = scheduler_.temperature();
@@ -142,13 +150,10 @@ int32_t Executor::sample() const {
 
     // 取最后一个位置的 logits
     int32_t target_seq_pos = this->seq_pos_ - 1;
-    const uint8_t* logits_base = static_cast<const uint8_t*>(logits->data) + target_seq_pos * vocab_size * data_type_size(logits->dtype);
+    const bfloat16_t* logits_base = static_cast<const bfloat16_t*>(logits->data) + target_seq_pos * vocab_size;
 
-    // ========== 1. BF16→F32 转换 + 温度缩放 + Softmax ==========
-    std::vector<float> probs(vocab_size);
-    for (size_t i = 0; i < vocab_size; ++i)
-        probs[i] = dtype::to_f32_rt(logits->dtype, logits_base + i * data_type_size(logits->dtype));
-    ops::Softmax<float>(probs, temperature);
+    // ========== 1. Softmax ==========
+    auto probs = ops::Softmax(std::span<const bfloat16_t>(logits_base, vocab_size), temperature);
 
     // ========== 2. Top-p 过滤 ==========
     if (top_p > 0.0f && top_p < 1.0f) {
@@ -165,11 +170,12 @@ int32_t Executor::sample() const {
         });
         
         // 累积概率找分界点
-        float cumsum = 0.0f;
+        float cumsum = 0;
         size_t cutoff = sorted_probs.size();
         for (size_t i = 0; i < sorted_probs.size(); ++i) {
             cumsum += sorted_probs[i].first;
-            if (cumsum >= top_p) {
+
+            if (cumsum >= float(top_p)) {
                 cutoff = i + 1;
                 break;
             }
@@ -184,7 +190,7 @@ int32_t Executor::sample() const {
         std::uniform_real_distribution<float> dist{0.0f, 1.0f};
         float rand_val = dist(rng);
 
-        float cum_prob = 0.0f;
+        float cum_prob = 0;
         for (size_t i = 0; i < cutoff; ++i) {
             cum_prob += sorted_probs[i].first / truncated_sum;
             if (rand_val <= cum_prob) {
@@ -214,6 +220,14 @@ void Executor::bind_input(const std::string& name, void* data, size_t byte_size)
 void Executor::resolve_dims(int64_t batch, int64_t seq_len) {
     for (auto* t : graph_.get_all_tensors()) {
         int neg_idx = 0;
+
+        // 首次调用时保存原始 dims（含 -1），后续调用先恢复
+        if (!original_dims_.contains(t->name)) {
+            original_dims_[t->name] = t->dims;
+        } else {
+            t->dims = original_dims_[t->name];
+        }
+
         for (int i = 0; i < TENSOR_MAX_DIMS && t->dims[i] != 0; ++i) {
             if (t->dims[i] == -1) {
                 t->dims[i] = seq_len;
@@ -319,6 +333,7 @@ void Executor::execute_memcpy(Tensor* t) {
 }
 
 void Executor::dispatch_kernel(Tensor* t) {
+    auto start = std::chrono::steady_clock::now();
     switch (t->op_type) {
         case OperationType::OP_TYPE_RESHAPE: kernel::reshape(t) ; break;
         case OperationType::OP_TYPE_VIEW:
@@ -349,4 +364,7 @@ void Executor::dispatch_kernel(Tensor* t) {
         case OperationType::OP_TYPE_SAMPLING:   kernel::sampling(t);   break;
         default:   throw std::runtime_error(std::format("Executor: unhandled op_type '{}' for tensor '{}'",operation_type_to_string(t->op_type), t->name));
     }
+    auto end = std::chrono::steady_clock::now();
+    std::chrono::duration<double, std::milli> duration = end - start;
+    std::println("{:<13} {:<20} {:<16} {:>10.1f}ms", operation_type_to_string(t->op_type), t->name, t->dims, duration.count());
 }

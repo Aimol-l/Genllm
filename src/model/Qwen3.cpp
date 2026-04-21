@@ -67,19 +67,20 @@ Tensor* Qwen3Model::build_qwen3_layer(
     // ──────────────────────────────────────────────────
     // 1.1 RMSNorm: input_layernorm
     const TensorInfo* attn_norm_info = OpFactory::find_tensor(info, prefix + ".attn_norm.weight"); // [hidden_size]
+    // [batch, seq_len, hidden_size],[hidden_size] -> [batch, seq_len, hidden_size ]
     Tensor* x_norm = OpFactory::rms_norm(input, attn_norm_info, rms_norm_eps, "x_norm",layer_idx); // [batch, seq_len, hidden_size]
     
-    // 1.2 Q/K/V 投影 (并行)
-    const TensorInfo* q_weight = OpFactory::find_tensor(info, prefix + ".attn_q.weight"); // [hidden_size, 2048]
-    const TensorInfo* k_weight = OpFactory::find_tensor(info, prefix + ".attn_k.weight"); // [hidden_size, 1024]
-    const TensorInfo* v_weight = OpFactory::find_tensor(info, prefix + ".attn_v.weight"); // [hidden_size, 1024]
+    // 1.2 Q/K/V 投影
+    const TensorInfo* q_weight = OpFactory::find_tensor(info, prefix + ".attn_q.weight"); // [2048, hidden_size]
+    const TensorInfo* k_weight = OpFactory::find_tensor(info, prefix + ".attn_k.weight"); // [1024, hidden_size]
+    const TensorInfo* v_weight = OpFactory::find_tensor(info, prefix + ".attn_v.weight"); // [1024, hidden_size]
 
-    // [batch, seq_len, hidden_size] @ [hidden_size, 2048] -> [batch, seq_len, 2048]
-    Tensor* q_flat = OpFactory::linear(x_norm, q_weight, "q_flat",layer_idx);
-    // [batch, seq_len, hidden_size] @ [hidden_size, 1024] -> [batch, seq_len, 1024]
-    Tensor* k_flat = OpFactory::linear(x_norm, k_weight, "k_flat",layer_idx);
-    // [batch, seq_len, hidden_size] @ [hidden_size, 1024] -> [batch, seq_len, 1024]
-    Tensor* v_flat = OpFactory::linear(x_norm, v_weight, "v_flat",layer_idx);
+    // [batch, seq_len, hidden_size] @ [2048, hidden_size].T -> [batch, seq_len, 2048]
+    Tensor* q_flat = OpFactory::linear(x_norm, q_weight, "q_flat",layer_idx,!info.pre_transpose);
+    // [batch, seq_len, hidden_size] @ [1024, hidden_size].T -> [batch, seq_len, 1024]
+    Tensor* k_flat = OpFactory::linear(x_norm, k_weight, "k_flat",layer_idx,!info.pre_transpose);
+    // [batch, seq_len, hidden_size] @ [1024, hidden_size].T -> [batch, seq_len, 1024]
+    Tensor* v_flat = OpFactory::linear(x_norm, v_weight, "v_flat",layer_idx,!info.pre_transpose);
     
     // 1.3 
     // [batch, seq_len, 2048] -> [batch, seq_len, num_heads, head_dim] -> [batch, num_heads, seq_len, head_dim]
@@ -106,11 +107,11 @@ Tensor* Qwen3Model::build_qwen3_layer(
     
     // 1.7 [B, num_heads, seq_len, head_dim] -> [B, seq_len, num_heads, head_dim] -> [B, seq_len, num_heads*head_dim]
     Tensor* attn_flat = OpFactory::permute_reshape(attn_4d,{0, 2, 1, 3},{1,-1,num_heads * head_dim},"attn_flat",layer_idx);
+    
+    const TensorInfo* attn_out_weight = OpFactory::find_tensor(info, prefix + ".attn_output.weight");   // [hidden_size, 2048]
 
-    const TensorInfo* attn_out_weight = OpFactory::find_tensor(info, prefix + ".attn_output.weight");   // [2048, hidden_size]
-
-    // [B, seq_len, num_heads*head_dim]@ [num_heads*head_dim, hidden_size] -> [B, seq_len, hidden_size]
-    Tensor* attn_out = OpFactory::linear(attn_flat, attn_out_weight, "attn_out",layer_idx);
+    // [B, seq_len, num_heads * head_dim]@ [hidden_size, 2048].T -> [B, seq_len, hidden_size]
+    Tensor* attn_out = OpFactory::linear(attn_flat, attn_out_weight, "attn_out",layer_idx,!info.pre_transpose);
     
     // 1.8 残差连接
     Tensor* ffn_input = OpFactory::add(attn_out, input, "ffn_input",layer_idx); // [B,seq_len, hidden_size]
@@ -122,23 +123,23 @@ Tensor* Qwen3Model::build_qwen3_layer(
     Tensor* ffn_normed = OpFactory::rms_norm(ffn_input, ffn_norm_info, rms_norm_eps, "ffn_normed",layer_idx); // [B, seq_len, hidden_size]
 
     // 2.2 SwiGLU: gate + up (并行)
-    const TensorInfo* gate_weight = OpFactory::find_tensor(info, prefix + ".ffn_gate.weight");  // [hidden_size, 3072]
-    const TensorInfo* up_weight = OpFactory::find_tensor(info, prefix + ".ffn_up.weight");      // [hidden_size, 3072]
+    const TensorInfo* gate_weight = OpFactory::find_tensor(info, prefix + ".ffn_gate.weight");  // [3072, hidden_size]
+    const TensorInfo* up_weight = OpFactory::find_tensor(info, prefix + ".ffn_up.weight");      // [3072, hidden_size]
 
-    // [B, seq_len, hidden_size] @ [hidden_size, 3072] -> [B, seq_len, 3072]
-    Tensor* gate = OpFactory::linear(ffn_normed, gate_weight, "gate",layer_idx);
-    // [B, seq_len, hidden_size] @ [hidden_size, 3072] -> [B, seq_len, 3072]
-    Tensor* up = OpFactory::linear(ffn_normed, up_weight, "up",layer_idx);
+    // [B, seq_len, hidden_size] @ [3072, hidden_size].T -> [B, seq_len, 3072]
+    Tensor* gate = OpFactory::linear(ffn_normed, gate_weight, "gate",layer_idx,!info.pre_transpose);
+    // [B, seq_len, hidden_size] @ [3072, hidden_size].T -> [B, seq_len, 3072]
+    Tensor* up = OpFactory::linear(ffn_normed, up_weight, "up",layer_idx,!info.pre_transpose);
     
     // 2.3 SiLU(gate) * up
     Tensor* gate_act = OpFactory::silu(gate, "gate_act",layer_idx);// [B, seq_len, 3072]
-    // 逐元素乘法
     Tensor* ffn_inter = OpFactory::mul(gate_act, up, "ffn_inter",layer_idx); // [B, seq_len, 3072] * [B, seq_len, 3072] -> [B, seq_len, 3072]
 
     // 2.4 Down projection + 残差
-    const TensorInfo* down_weight = OpFactory::find_tensor(info, prefix + ".ffn_down.weight");  // [3072, hidden_size]
-    // [B, seq_len, 3072] @ [3072, hidden_size] -> [B, seq_len, hidden_size]
-    Tensor* ffn_out = OpFactory::linear(ffn_inter, down_weight, "ffn_out",layer_idx);
+    const TensorInfo* down_weight = OpFactory::find_tensor(info, prefix + ".ffn_down.weight");  // [hidden_size, 3072]
+
+    // 2.5 [B, seq_len, 3072] @ [hidden_size, 3072].T -> [B, seq_len, hidden_size]
+    Tensor* ffn_out = OpFactory::linear(ffn_inter, down_weight, "ffn_out",layer_idx,!info.pre_transpose);
     Tensor* layer_output = OpFactory::add(ffn_out, ffn_input, "layer_output",layer_idx); // [B, seq_len, hidden_size]
 
     return layer_output;
@@ -152,17 +153,18 @@ ComputeGraph& Qwen3Model::build_graph(const GGUFInfo& info){
     //=====================================================================================
     Tensor* input_ids = OpFactory::placeholder(DataType::GGML_TYPE_I32,TensorType::TENSOR_TYPE_INPUT, {1, -1},"input_ids"); //[B, seq_len]
 
-    auto [rope_cos, rope_sin] = OpFactory::rope_cache(config_.max_seq_len, config_.head_dim, config_.rope_theta,DataType::GGML_TYPE_F32); // [max_seq_len, head_dim/2]
+    // [max_seq_len, head_dim]
+    auto [rope_cos, rope_sin] = OpFactory::rope_cache(config_.max_seq_len, config_.head_dim, config_.rope_theta,DataType::GGML_TYPE_F32); 
 
-    const TensorInfo* embd_weight_info = OpFactory::find_tensor(info, "token_embd.weight"); // [vocab_size, hidden_size].T
+    const TensorInfo* embd_weight_info = OpFactory::find_tensor(info, "token_embd.weight"); // [vocab_size, hidden_size]
 
     if (!embd_weight_info) throw std::runtime_error("token_embd.weight not found in GGUF");
 
-    //[B, seq_len]，[hidden_size, vocab_size] -> [B, seq_len, hidden_size]
+    //[B, seq_len]，[vocab_size, hidden_size] -> [B, seq_len, hidden_size]
     // 对embd_weight_info进行转置标记，在算子实现的时候进行转置访问
-    Tensor* x_in = OpFactory::embedding_lookup(input_ids, embd_weight_info,"x_in",-1,true);
+    Tensor* x_in = OpFactory::embedding_lookup(input_ids, embd_weight_info,"x_in",-1,info.pre_transpose); //  info.pre_transpose == true
 
-    Tensor* prev_output = x_in;
+    Tensor* prev_output = x_in; // [B, seq_len, hidden_size]
 
     for (int layer_idx = 0; layer_idx < config_.num_layers; ++layer_idx) {
         prev_output = this->build_qwen3_layer(
@@ -183,8 +185,8 @@ ComputeGraph& Qwen3Model::build_graph(const GGUFInfo& info){
     const TensorInfo* output_norm_info = OpFactory::find_tensor(info, "output_norm.weight"); // [hidden_size]
     Tensor* final_norm = OpFactory::rms_norm(prev_output,output_norm_info,config_.rms_norm_eps,"final_norm",config_.num_layers); // [B, seq_len, hidden_size]
 
-    // LM Head: [B, seq_len, hidden_size] @ [hidden_size, vocab_size] -> [B, seq_len, vocab_size]
-    Tensor* logits = OpFactory::linear(final_norm,embd_weight_info,"logits",config_.num_layers);
+    // LM Head: [B, seq_len, hidden_size] @ [vocab_size, hidden_size].T -> [B, seq_len, vocab_size]
+    Tensor* logits = OpFactory::linear(final_norm,embd_weight_info,"logits",config_.num_layers,!info.pre_transpose);
     
     logits->type = TensorType::TENSOR_TYPE_OUTPUT; // 标记为输出张量
     

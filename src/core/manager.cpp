@@ -1,6 +1,9 @@
 #include "core/manager.hpp"
+#include "utils/tools.hpp"
 #include <vector>
 #include <print>
+#include <unordered_set>
+#include <cstring>
 
 #ifdef BACKEND_CUDA
 #include <cuda_runtime.h>
@@ -61,12 +64,12 @@ void MemoryManager::reset_all_activations() {
 }
 
 void MemoryManager::print_all_usage() const {
-    std::println("\n=== Memory Usage ===");
+    std::println("===================== Memory Usage =====================");
     for (const auto& [key, pools] : devices_) {
         std::println("{}:{}", device_to_string(key.dev), key.id);
         pools.print_usage();
     }
-    std::println("====================\n");
+    std::println("========================================================");
 }
 void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) {
     struct WeightEntry {
@@ -98,8 +101,8 @@ void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) 
         }
         for (auto& entry : cpu_weights) {
             size_t size = entry.tensor->bytes();
-            MemoryBlock block = pools->weight->allocate(size, 64);
-            parser.read_tensor_data(entry.gguf_offset, block.ptr, size);
+            MemoryBlock block = pools->weight->allocate(size, 32);
+            parser.read_tensor_data(entry.gguf_offset, block.ptr, size, entry.tensor);
             entry.tensor->data = block.ptr;
             entry.tensor->offset = block.offset;
         }
@@ -114,9 +117,9 @@ void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) 
             if (!pools || !pools->weight) {
                 throw std::runtime_error(std::format("load_weights: no weight pool for {} tensor {}",device_to_string(entry.tensor->device), entry.tensor->name));
             }
-            MemoryBlock block = pools->weight->allocate(size, 64);
+            MemoryBlock block = pools->weight->allocate(size, 32);
             staging.resize(size);
-            parser.read_tensor_data(entry.gguf_offset, staging.data(), size);
+            parser.read_tensor_data(entry.gguf_offset, staging.data(), size,entry.tensor);
             cudaMemcpy(block.ptr, staging.data(), size, cudaMemcpyHostToDevice);
             entry.tensor->data = block.ptr;
             entry.tensor->offset = block.offset;
@@ -129,6 +132,56 @@ void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) 
             gpu_weights.size()));
     }
 #endif
+
+
+    // 预转置 linear 权重: [out_features, in_features] → [in_features, out_features]
+    // 使推理时 linear kernel 走连续内存访问路径，消除运行时 transpose 开销
+    // {
+    //     std::unordered_set<Tensor*> done;
+    //     int count = 0;
+    //     for (auto* t : graph.get_all_tensors()) {
+    //         if (t->op_type != OperationType::OP_TYPE_LINEAR) continue;
+    //         if (static_cast<int>(t->op_params[0]) != 1) continue;
+
+    //         Tensor* w = t->src[1];
+    //         if (!w || !w->data || done.contains(w)) continue;
+    //         done.insert(w);
+
+    //         int64_t rows = w->dims[0]; // out_features
+    //         int64_t cols = w->dims[1]; // in_features
+    //         size_t esz  = data_type_size(w->dtype);
+    //         size_t nbytes = static_cast<size_t>(rows) * cols * esz;
+
+    //         std::vector<uint8_t> buf(nbytes);
+    //         auto* src = static_cast<const uint8_t*>(w->data);
+
+    //         // 转置 [rows, cols] → [cols, rows]
+    //         for (int64_t i = 0; i < rows; ++i) {
+    //             for (int64_t j = 0; j < cols; ++j) {
+    //                 std::memcpy(buf.data() + (j * rows + i) * esz,
+    //                            src + (i * cols + j) * esz, esz);
+    //             }
+    //         }
+    //         std::memcpy(const_cast<void*>(w->data), buf.data(), nbytes);
+
+    //         // 交换维度并重算步长
+    //         std::swap(w->dims[0], w->dims[1]);
+    //         size_t stride = 1;
+    //         for (int d = TENSOR_MAX_DIMS - 1; d >= 0; --d) {
+    //             if (w->dims[d] == 0) {
+    //                 w->strides[d] = 0;
+    //             } else {
+    //                 w->strides[d] = stride * esz;
+    //                 stride *= static_cast<size_t>(w->dims[d]);
+    //             }
+    //         }
+
+    //         t->op_params[0] = 0; // 标记为无需运行时转置
+    //         ++count;
+    //     }
+    //     if (count > 0)
+    //         std::println("[load_weights] pre-transposed {} linear weight tensors", count);
+    // }
 
     this->print_all_usage();
 }

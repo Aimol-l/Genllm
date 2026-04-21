@@ -22,6 +22,8 @@ private:
     std::vector<Tensor*> step_ops_;        // 其余计算节点
     
     std::unordered_map<Device, size_t> persistent_cursor_;
+    std::unordered_map<std::string, std::array<int64_t, TENSOR_MAX_DIMS>> original_dims_;
+    
 public:
     explicit Executor(GraphScheduler& scheduler);
     Executor(const Executor&) = delete;
@@ -30,7 +32,7 @@ public:
     std::vector<int32_t> generate(
         const std::vector<int32_t>& prompt,
         int max_tokens,
-        int eos_token = -1
+        int32_t eos_tokens
     );
 private:
     void prefill(const std::vector<int32_t>& token_ids);

@@ -1,6 +1,15 @@
 #pragma once
 #include <cstdint>
 #include <string>
+// #define RUNNING_TIME(expr) \
+//     do { \
+//         auto start = std::chrono::steady_clock::now(); \
+//         expr; \
+//         auto end = std::chrono::steady_clock::now(); \
+//         std::chrono::duration<double, std::milli> duration = end - start; \
+//         std::cout << "Execution time: " << duration.count() << "ms" << std::endl; \
+//     } while (0)
+
 
 // 支持的后端设备
 enum class Device: uint8_t {

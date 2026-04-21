@@ -60,5 +60,5 @@ void CpuMemoryResource::deallocate(void* ptr, size_t size) {
     #else
         free(ptr);
     #endif
-    std::println("Deallocated {} bytes on CPU", size);
+    // std::println("Deallocated {} bytes on CPU", size);
 }

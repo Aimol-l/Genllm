@@ -66,15 +66,25 @@ void linear(Tensor* out) {
     const Tensor* w    = out->src[1];
     const Tensor* bias = out->src[2];
 
+    bool transpose_w = out->op_params[0] == 1;
+
     if (!is_floating(w->dtype)) {
         throw std::runtime_error(std::format(
             "cpu::linear: quantized weight ({}) not supported yet",
             data_type_to_string(w->dtype)));
     }
 
-    int64_t in_features  = w->dims[0];
-    int64_t out_features = w->dims[1];
-    int64_t w_ld         = w->dims[1]; // 列宽（每行 out_features 个元素）
+    int64_t in_features, out_features, w_ld;
+    if (transpose_w) {
+        // W 存储为 [out_features, in_features]
+        out_features = w->dims[0];
+        in_features  = w->dims[1];
+    } else {
+        // W 存储为 [in_features, out_features]
+        in_features  = w->dims[0];
+        out_features = w->dims[1];
+    }
+    w_ld = w->dims[1]; // 列宽（每行元素数）
     size_t M = x->num_elements() / static_cast<size_t>(in_features);
 
     size_t x_sz = data_type_size(x->dtype);
@@ -105,8 +115,10 @@ void linear(Tensor* out) {
             for (int64_t j = 0; j < out_features; ++j) {
                 float sum = 0.0f;
                 for (int64_t k = 0; k < in_features; ++k) {
-                    sum += x_row[static_cast<size_t>(k)]
-                         * dtype::to_f32<D_w>(wp[k * w_ld + j]);
+                    float w_val = transpose_w
+                        ? dtype::to_f32<D_w>(wp[j * w_ld + k])
+                        : dtype::to_f32<D_w>(wp[k * w_ld + j]);
+                    sum += x_row[static_cast<size_t>(k)] * w_val;
                 }
                 if (bp) {
                     sum += dtype::to_f32_rt(bias->dtype, bp + j * b_sz);

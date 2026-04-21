@@ -118,10 +118,10 @@ public:
         return *this;
     }
     void build_from_outputs(std::initializer_list<Tensor*> outputs) {
-        clear();
-        external_outputs_.assign(outputs);
-        reverse_bfs_collect(external_outputs_);
-        topological_sort();
+        this->clear();
+        this->external_outputs_.assign(outputs);
+        this->reverse_bfs_collect(external_outputs_);
+        this->topological_sort();
     }
 
     void clear() {
