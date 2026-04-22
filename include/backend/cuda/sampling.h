@@ -6,10 +6,10 @@ namespace ops {
     template <Device D> struct SamplingImpl;
 
     template <>
-    struct SamplingImpl<Device::CPU> {
+    struct SamplingImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
-    extern template struct SamplingImpl<Device::CPU>;
+    extern template struct SamplingImpl<Device::CUDA>;
 
 }

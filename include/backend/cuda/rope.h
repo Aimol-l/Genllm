@@ -7,16 +7,16 @@ namespace ops {
     template <Device D> struct RopeCacheImpl;
 
     template <>
-    struct ApplyRopeImpl<Device::CPU> {
+    struct ApplyRopeImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
     template <>
-    struct RopeCacheImpl<Device::CPU> {
+    struct RopeCacheImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
-    extern template struct ApplyRopeImpl<Device::CPU>;
-    extern template struct RopeCacheImpl<Device::CPU>;
+    extern template struct ApplyRopeImpl<Device::CUDA>;
+    extern template struct RopeCacheImpl<Device::CUDA>;
 
 }

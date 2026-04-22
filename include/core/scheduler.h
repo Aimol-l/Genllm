@@ -3,10 +3,10 @@
 #include <memory>
 #include <vector>
 #include <string>
-#include "graph.hpp"
+#include "graph.h"
 #include "backend/backend.h"
 #include "utils/utils.hpp"
-#include "core/manager.hpp"
+#include "core/manager.h"
 
 class GraphScheduler {
 public:
@@ -53,6 +53,8 @@ public:
     void export_dot(const std::string& path) const { graph_.export_dot(path); }
 
     const ComputeGraph& graph() const { return graph_; }
+    Config& config() { return config_; }
+    const Config& config() const { return config_; }
 
     size_t vocab_size() const { return config_.vocab_size; }
     int64_t max_seq_len() const { return config_.max_seq_len; }

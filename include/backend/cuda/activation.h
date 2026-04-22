@@ -8,22 +8,22 @@ namespace ops {
     template <Device D> struct ReluImpl;
 
     template <>
-    struct SiluImpl<Device::CPU> {
+    struct SiluImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
     template <>
-    struct GeluImpl<Device::CPU> {
+    struct GeluImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
     template <>
-    struct ReluImpl<Device::CPU> {
+    struct ReluImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
-    extern template struct SiluImpl<Device::CPU>;
-    extern template struct GeluImpl<Device::CPU>;
-    extern template struct ReluImpl<Device::CPU>;
+    extern template struct SiluImpl<Device::CUDA>;
+    extern template struct GeluImpl<Device::CUDA>;
+    extern template struct ReluImpl<Device::CUDA>;
 
 }

@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <memory>
 #include <algorithm>
-#include "graph.hpp"
+#include "graph.h"
 #include "gguf_parser.h"
 // #include "core/mmanger.h"
 #include "utils/utils.hpp"

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <print>
 #include <span>
 #include <stdexcept>
 #include <cstring>
@@ -104,11 +105,15 @@ void Executor::execute_tensor(Tensor* t) {
 // 作用：执行自回归生成，分为 prefill 和 decode 两个阶段
 std::vector<int32_t> Executor::generate(
     const std::vector<int32_t>& prompt,
-    int max_tokens,
+    int64_t max_tokens,
     int32_t eos_tokens)
 {
+    if(prompt.empty()) throw std::invalid_argument("Executor::generate: prompt cannot be empty");
+    if(max_tokens<=0) throw std::invalid_argument("Executor::generate: max_tokens must be positive");
+    if(max_tokens>scheduler_.config().max_seq_len) {
+        throw std::invalid_argument(std::format("Executor::generate: max_tokens {} exceeds scheduler's max_seq_len {}",max_tokens, scheduler_.config().max_seq_len));
+    }
     // 构建快速查找集合
-
     std::vector<int32_t> output;
     std::vector<int32_t> token_cache = prompt;
 
@@ -116,16 +121,17 @@ std::vector<int32_t> Executor::generate(
     this->prefill(prompt);
 
     // Phase 2: Decode 循环
-    for (int i = 0; i < max_tokens; ++i) {
+    for (int i = 0; i <max_tokens; ++i) {
         int32_t next = this->sample();  // 从当前 logits 采样
-
         if (eos_tokens == next) break;
-
         output.push_back(next);
         token_cache.push_back(next);
-
         this->decode_step(token_cache);
+
+        std::print("\rtokens: {}/{}",i+1,max_tokens);
+        std::fflush(stdout);
     }
+    std::print("\n");
     return output;
 }
 
@@ -343,33 +349,33 @@ void Executor::execute_memcpy(Tensor* t) {
 void Executor::dispatch_kernel(Tensor* t) {
     // auto start = std::chrono::steady_clock::now();
     switch (t->op_type) {
-        case OperationType::OP_TYPE_RESHAPE: kernel::reshape(t) ; break;
+        case OperationType::OP_TYPE_RESHAPE:        kernel::reshape(t) ; break;
         case OperationType::OP_TYPE_VIEW:
-        case OperationType::OP_TYPE_TRANSPOSE:  return;
-        case OperationType::OP_TYPE_PERMUTE:    kernel::permute(t); break;
-        case OperationType::OP_TYPE_MEMCPY:     return;
-        case OperationType::OP_TYPE_ADD:     kernel::add(t);     break;
-        case OperationType::OP_TYPE_SUB:     kernel::sub(t);     break;
-        case OperationType::OP_TYPE_MUL:     kernel::mul(t);     break;
-        case OperationType::OP_TYPE_DIV:     kernel::div(t);     break;
-        case OperationType::OP_TYPE_SCALE:   kernel::scale(t);   break;
-        case OperationType::OP_TYPE_RMS_NORM:   kernel::rms_norm(t);   break;
-        case OperationType::OP_TYPE_LAYER_NORM: kernel::layer_norm(t); break;
-        case OperationType::OP_TYPE_MAT_MUL:   kernel::matmul(t);     break;
-        case OperationType::OP_TYPE_LINEAR:    kernel::linear(t);     break;
-        case OperationType::OP_TYPE_SILU:  kernel::silu(t);  break;
-        case OperationType::OP_TYPE_GELU:  kernel::gelu(t);  break;
-        case OperationType::OP_TYPE_RELU:  kernel::relu(t);  break;
-        case OperationType::OP_TYPE_SOFTMAX:      kernel::softmax(t);      break;
-        case OperationType::OP_TYPE_DIAG_MASK_INF: kernel::diag_mask_inf(t); break;
-        case OperationType::OP_TYPE_SDPA:          kernel::sdpa(t);          break;
-        case OperationType::OP_TYPE_FLASH_ATTN:    kernel::flash_attention(t);    break;
-        case OperationType::OP_TYPE_EMBEDDING:  kernel::embedding(t);  break;
-        case OperationType::OP_TYPE_APPLY_ROPE: kernel::apply_rope(t); break;
-        case OperationType::OP_TYPE_CONCAT:  kernel::concat(t);  break;
-        case OperationType::OP_TYPE_REPEAT:  kernel::repeat(t);  break;
-        case OperationType::OP_TYPE_ROPE_CACHE: kernel::rope_cache(t); break;
-        case OperationType::OP_TYPE_SAMPLING:   kernel::sampling(t);   break;
+        case OperationType::OP_TYPE_TRANSPOSE:      return;
+        case OperationType::OP_TYPE_PERMUTE:        kernel::permute(t); break;
+        case OperationType::OP_TYPE_MEMCPY:         return;
+        case OperationType::OP_TYPE_ADD:            kernel::add(t);     break;
+        case OperationType::OP_TYPE_SUB:            kernel::sub(t);     break;
+        case OperationType::OP_TYPE_MUL:            kernel::mul(t);     break;
+        case OperationType::OP_TYPE_DIV:            kernel::div(t);     break;
+        case OperationType::OP_TYPE_SCALE:          kernel::scale(t);   break;
+        case OperationType::OP_TYPE_RMS_NORM:       kernel::rms_norm(t);   break;
+        case OperationType::OP_TYPE_LAYER_NORM:     kernel::layer_norm(t); break;
+        case OperationType::OP_TYPE_MAT_MUL:        kernel::matmul(t);     break;
+        case OperationType::OP_TYPE_LINEAR:         kernel::linear(t);     break;
+        case OperationType::OP_TYPE_SILU:           kernel::silu(t);  break;
+        case OperationType::OP_TYPE_GELU:           kernel::gelu(t);  break;
+        case OperationType::OP_TYPE_RELU:           kernel::relu(t);  break;
+        case OperationType::OP_TYPE_SOFTMAX:        kernel::softmax(t);      break;
+        case OperationType::OP_TYPE_DIAG_MASK_INF:  kernel::diag_mask_inf(t); break;
+        case OperationType::OP_TYPE_SDPA:           kernel::sdpa(t);          break;
+        case OperationType::OP_TYPE_FLASH_ATTN:     kernel::flash_attention(t);    break;
+        case OperationType::OP_TYPE_EMBEDDING:      kernel::embedding(t);  break;
+        case OperationType::OP_TYPE_APPLY_ROPE:     kernel::apply_rope(t); break;
+        case OperationType::OP_TYPE_CONCAT:         kernel::concat(t);  break;
+        case OperationType::OP_TYPE_REPEAT:         kernel::repeat(t);  break;
+        case OperationType::OP_TYPE_ROPE_CACHE:     kernel::rope_cache(t); break;
+        case OperationType::OP_TYPE_SAMPLING:       kernel::sampling(t);   break;
         default:   throw std::runtime_error(std::format("Executor: unhandled op_type '{}' for tensor '{}'",operation_type_to_string(t->op_type), t->name));
     }
     // auto end = std::chrono::steady_clock::now();

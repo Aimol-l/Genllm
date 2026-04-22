@@ -4,6 +4,7 @@
 #include "utils/utils.hpp"
 #include "utils/float16.hpp"
 #include "utils/bfloat16.hpp"
+#include "utils/utils.hpp"
 
 namespace dtype {
 
@@ -68,3 +69,19 @@ inline void from_f32_rt(DataType dtype, float f, void* ptr) {
 }
 
 } // namespace dtype
+
+namespace device {
+
+// Device 分发：运行时 Device → 编译时模板参数
+template<typename Fn>
+void dispatchOp(Device device, Fn&& fn) {
+    switch (device) {
+        case Device::CPU: fn.template operator()<Device::CPU>(); break;
+    #ifdef BACKEND_CUDA
+        case Device::CUDA: fn.template operator()<Device::CUDA>(); break;
+    #endif
+        default: throw std::runtime_error(std::format("device::dispatchOp: unsupported device {}", device_to_string(device)));
+    }
+}
+
+};

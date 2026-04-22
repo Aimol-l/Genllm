@@ -5,7 +5,7 @@
 
 #include "pools.h"
 #include "resource.h"
-#include "graph.hpp"
+#include "graph.h"
 #include "utils/utils.hpp"
 #include "core/gguf_parser.h"
 

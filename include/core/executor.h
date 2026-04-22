@@ -34,7 +34,7 @@ public:
     /// 自回归生成：prefill(prompt) → 循环 decode → 返回生成的 token 序列
     std::vector<int32_t> generate(
         const std::vector<int32_t>& prompt,
-        int max_tokens,
+        int64_t max_tokens,
         int32_t eos_tokens
     );
 private:

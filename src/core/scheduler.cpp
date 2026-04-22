@@ -3,12 +3,15 @@
 void GraphScheduler::schedule(const std::vector<BackendInfo>& devices) {
     if (devices.empty())
         throw std::runtime_error("GraphScheduler: no devices provided");
-    auto costs = this->estimate_layer_costs(this->graph_); 
+
+    // 1. 估算每层内存开销,包括激活缓存和权重和kv-cache(暂时不考虑)
+    std::vector<LayerCost> costs = this->estimate_layer_costs(this->graph_); 
     if (costs.empty()) {
         std::println("[Scheduler] No transformer layers found, nothing to schedule");
         return;
     }
     this->assignments_ = this->assign_layers(costs, devices);
+
     this->apply_assignment(this->graph_, this->assignments_);
     
     Device cpu = Device::CPU;
@@ -29,8 +32,6 @@ std::vector<GraphScheduler::LayerCost> GraphScheduler::estimate_layer_costs(cons
     const auto& groups = graph.get_layer_groups();
     std::vector<LayerCost> costs;
     for (const auto& [layer_id, tensors] : groups) {
-        // if (layer_id < 0) 
-            // continue;
         LayerCost lc;
         lc.layer_id = layer_id;
         lc.kv_cache_bytes = config_.kv_cache_per_layer;
@@ -57,6 +58,16 @@ std::vector<GraphScheduler::LayerCost> GraphScheduler::estimate_layer_costs(cons
 }
 
 // ========== 2. 分配连续层到设备 ==========
+// 策略：将 transformer 层按顺序切分为连续段，每段分配到一个计算设备。
+//   1. 按可用显存降序排列计算设备（GPU/SYCL/Vulkan），CPU 作为兜底。
+//   2. 计算平均每设备应承担的总内存量 per_dev = ceil(total / n_devices)。
+//   3. 从头到尾遍历层，累加每层 weight + activation + kv_cache 开销。
+//      当累加量达到 per_dev 或超出当前设备可用内存（扣除 headroom）时，
+//      切到下一个设备，保证：
+//        - 同一段内的层在物理上连续（利于跨层数据局部性）
+//        - 不会把单个设备的显存撑爆
+//   4. 若没有计算设备，所有层全部分配给 CPU。
+// 返回值：每段对应一个 LayerAssignment（start_layer, end_layer, device, ...）。
 std::vector<GraphScheduler::LayerAssignment> GraphScheduler::assign_layers(
     const std::vector<LayerCost>& costs,
     const std::vector<BackendInfo>& devices
@@ -243,6 +254,8 @@ void GraphScheduler::insert_copy_edges(ComputeGraph& graph) const {
     }
 }
 
+// 这里会再次统计需要使用的权重池、激活池使用大小
+// 然后创建权重池、激活池
 void GraphScheduler::create_memory_pools(const ComputeGraph& graph,const std::vector<BackendInfo>& devices) {
     std::unordered_map<Device, size_t> dev_id_map;
     for (const auto& d : devices) {
@@ -268,7 +281,7 @@ void GraphScheduler::create_memory_pools(const ComputeGraph& graph,const std::ve
         size_t act_cap = u.activation_bytes * config_.activation_pool_factor;
         if (act_cap < 64ULL << 20) 
             act_cap = 64ULL << 20;
-        this->mmanager_->get_or_create(dev, dev_id, u.weight_bytes, act_cap, 0);
+        this->mmanager_->get_or_create(dev, dev_id, u.weight_bytes, act_cap, 0); // kv先认为0
         std::println("{}:{}  weight_pool={}  activation_pool={}",device_to_string(dev), dev_id,format_bytes(u.weight_bytes), format_bytes(act_cap));
     }
 }

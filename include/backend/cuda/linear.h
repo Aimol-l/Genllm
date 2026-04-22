@@ -7,23 +7,23 @@ namespace ops {
     template <Device D> struct MatmulImpl;
     template <Device D> struct TransposeImpl;
 
-
     template <>
-    struct LinearImpl<Device::CPU> {
+    struct LinearImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
     template <>
-    struct MatmulImpl<Device::CPU> {
+    struct MatmulImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
     template <>
-    struct TransposeImpl<Device::CPU> {
+    struct TransposeImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
-    extern template struct LinearImpl<Device::CPU>;
-    extern template struct MatmulImpl<Device::CPU>;
-    extern template struct TransposeImpl<Device::CPU>;
+    extern template struct LinearImpl<Device::CUDA>;
+    extern template struct MatmulImpl<Device::CUDA>;
+    extern template struct TransposeImpl<Device::CUDA>;
+
 }

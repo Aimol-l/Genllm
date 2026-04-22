@@ -10,34 +10,34 @@ namespace ops {
     template <Device D> struct ScaleImpl;
 
     template <>
-    struct AddImpl<Device::CPU> {
+    struct AddImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
     template <>
-    struct SubImpl<Device::CPU> {
+    struct SubImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
     template <>
-    struct MulImpl<Device::CPU> {
+    struct MulImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
     template <>
-    struct DivImpl<Device::CPU> {
+    struct DivImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
     template <>
-    struct ScaleImpl<Device::CPU> {
+    struct ScaleImpl<Device::CUDA> {
         static void execute(Tensor* out);
     };
 
-    extern template struct AddImpl<Device::CPU>;
-    extern template struct SubImpl<Device::CPU>;
-    extern template struct MulImpl<Device::CPU>;
-    extern template struct DivImpl<Device::CPU>;
-    extern template struct ScaleImpl<Device::CPU>;
+    extern template struct AddImpl<Device::CUDA>;
+    extern template struct SubImpl<Device::CUDA>;
+    extern template struct MulImpl<Device::CUDA>;
+    extern template struct DivImpl<Device::CUDA>;
+    extern template struct ScaleImpl<Device::CUDA>;
 
 }
