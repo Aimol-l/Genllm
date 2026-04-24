@@ -66,11 +66,14 @@ class Qwen3Attention:
 
         # 1. RMSNorm
         x_norm = rms_norm(x, self.attn_norm_weight, eps=cfg.rms_norm_eps)
+        print(x_norm)
 
         # 2. Q/K/V projections
         q_flat = linear(x_norm, self.q_weight, None)  # [S, num_heads*head_dim]
         k_flat = linear(x_norm, self.k_weight, None)  # [S, num_kv_heads*head_dim]
         v_flat = linear(x_norm, self.v_weight, None)  # [S, num_kv_heads*head_dim]
+
+        print(k_flat)
 
         # 3. Reshape to 4D: [1, S, hidden] -> [1, n_heads, S, head_dim]
         q_4d = q_flat.view(1, -1, cfg.num_heads, cfg.head_dim).permute(0, 2, 1, 3).contiguous()

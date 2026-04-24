@@ -13,9 +13,6 @@ def load_weights_from_hf(model: Qwen3Model, hf_model):
     # Embedding: HF [vocab, hidden] -> our [vocab, hidden]
     model.token_embd_weight = hf_model.model.embed_tokens.weight.data.clone()
 
-    print(model.token_embd_weight.shape)
-    print(model.token_embd_weight)
-
     # Output norm
     model.output_norm_weight = hf_model.model.norm.weight.data.clone()
 
@@ -38,8 +35,6 @@ def load_weights_from_hf(model: Qwen3Model, hf_model):
         b.ffn.down_weight = hl.mlp.down_proj.weight.data.T.contiguous()
         b.ffn.ffn_norm_weight = hl.post_attention_layernorm.weight.data.clone()
 
-        print(b.ffn.down_weight.shape)
-        print(b.ffn.down_weight)
 
     # RoPE cache
     model.cos, model.sin = compute_rope_cos_sin(

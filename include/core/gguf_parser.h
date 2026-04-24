@@ -26,8 +26,6 @@ struct TensorInfo {
 };
 // GGUF 头部信息结构
 struct GGUFInfo {
-    bool pre_transpose = false; // 是否预转置权重数据，开启后加载时直接转置，推理时免去转置开销
-    
     Json metadata;
     uint32_t version;
     uint64_t tensor_count;
@@ -71,7 +69,7 @@ private:
     GGUFInfo info_;
     uint64_t data_offset_ = 0;
 public:
-    explicit GGUFParser(const std::string& filename,bool pre_transpose=false);
+    explicit GGUFParser(const std::string& filename);
     ~GGUFParser();
     GGUFParser(const GGUFParser&) = delete;
     GGUFParser& operator=(const GGUFParser&) = delete;

@@ -11,7 +11,7 @@ int main() {
 
     DeviceManager::instance().print_devices();
 
-    GGUFParser parser("models/Qwen3-0.6B-BF16.gguf",false); // 开启预转置，加载时直接转置权重数据，节省推理时Liner算子等的转置开销
+    GGUFParser parser("models/Qwen3-0.6B-BF16.gguf");
 
     parser.info().print_info();
 
@@ -45,7 +45,6 @@ int main() {
 
     // Qwen3 chat 格式
     const std::string user_msg = "1+1=";
-
     std::string chat_prompt = std::format("<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n", user_msg);
 
     std::vector<int32_t> prompt_ids = tokenizer.encode(chat_prompt);
@@ -55,11 +54,12 @@ int main() {
     std::println("========================================================");
     try {
 
-        std::vector<int32_t> output = executor.generate(prompt_ids, 48, tokenizer.eos_id());
+        std::vector<int32_t> output = executor.generate(prompt_ids, 64, tokenizer.eos_id());
 
         std::string gen = tokenizer.decode(output);
 
         std::println("Generated: {}", gen);
+        std::println("out token{}",output);
 
     } catch (const std::exception& e) {
 

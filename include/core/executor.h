@@ -47,7 +47,9 @@ private:
     void decode_step(const std::vector<int32_t>& token_ids);
 
     void forward();
-    int32_t sample() const;
+    int32_t sample()const;
+    int32_t sample_argmax() const;  // greedy：直接取 argmax
+    int32_t sample_top_p(float temperature, float top_p) const;
     void reset_activations();
     void resolve_dims(int64_t batch, int64_t seq_len);
     void bind_input(const std::string& name, void* data, size_t byte_size);

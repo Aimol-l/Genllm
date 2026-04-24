@@ -341,12 +341,14 @@ if __name__ == "__main__":
     )
     chat_ids = chat_result["input_ids"] if hasattr(chat_result, "input_ids") else chat_result
 
+    print(tokenizer.decode(chat_ids))
+
     print(f"Input:  {prompt!r}")
     print(f"Token ids: {chat_ids}")
 
     # 6. Greedy decode
     input_ids = list(chat_ids)
-    max_new_tokens = 256
+    max_new_tokens = 64
     EOS_TOKEN_IDS = {tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("<|im_end|>")}
     print(EOS_TOKEN_IDS)
 
@@ -360,9 +362,10 @@ if __name__ == "__main__":
             break
 
         input_ids.append(next_token)
-        print(tokenizer.decode([next_token]), end="", flush=True)
+        # print(tokenizer.decode([next_token]), end="", flush=True)
 
     print("\n")
 
     # 7. 完整输出
+    print(input_ids)
     print(f"Full output:\n{tokenizer.decode(input_ids)}")

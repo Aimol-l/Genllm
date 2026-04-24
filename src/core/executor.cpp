@@ -108,9 +108,11 @@ void Executor::forward() {
     for (size_t i = 0; i < step_layers_.size(); ++i) {
         for (const auto& level : step_layers_[i].levels) {
             for (Tensor* t : level) {
-                pool_->submit([this, t]() { this->execute_tensor(t); });
+                // pool_->submit([this, t]() { this->execute_tensor(t); });
+                this->execute_tensor(t);
+                // ops::println(t);
             }
-            pool_->wait();
+            // pool_->wait();
         }
         // 非最后一层时 reset，下一层复用激活池内存
         if (i + 1 < step_layers_.size()) {
@@ -142,16 +144,15 @@ std::vector<int32_t> Executor::generate(
     if(max_tokens>scheduler_.config().max_seq_len) {
         throw std::invalid_argument(std::format("Executor::generate: max_tokens {} exceeds scheduler's max_seq_len {}",max_tokens, scheduler_.config().max_seq_len));
     }
-    // 构建快速查找集合
     std::vector<int32_t> output;
     std::vector<int32_t> token_cache = prompt;
 
-    // Phase 1: Prefill
     this->prefill(prompt);
 
-    // Phase 2: Decode 循环
-    for (int i = 0; i <max_tokens; ++i) {
-        int32_t next = this->sample();  // 从当前 logits 采样
+    for (int i = 0; i < max_tokens; ++i) {
+        int32_t next = this->sample();
+        // int32_t next = this->sample_argmax();
+        // int32_t next = this->sample_top_p(scheduler_.temperature(), scheduler_.top_p());
         if (eos_tokens == next) break;
         output.push_back(next);
         token_cache.push_back(next);
@@ -180,6 +181,29 @@ void Executor::decode_step(const std::vector<int32_t>& token_ids) {
     this->bind_input("input_ids", const_cast<int32_t*>(token_ids.data()), token_ids.size() * sizeof(int32_t));
     this->forward();
     ++this->seq_pos_;
+}
+
+int32_t Executor::sample_argmax() const {
+    Tensor* logits = find_tensor("logits");
+    if (!logits || !logits->data) {
+        throw std::runtime_error("Executor::sample_argmax: logits tensor not computed");
+    }
+    // ops::println(logits); // 调试用，打印 logits
+
+    const size_t vocab_size = scheduler_.vocab_size();
+    int32_t target_seq_pos = this->seq_pos_ - 1;
+    const bfloat16_t* logits_base = static_cast<const bfloat16_t*>(logits->data) + target_seq_pos * vocab_size;
+
+    int32_t best = 0;
+    float best_val = static_cast<float>(logits_base[0]);
+    for (size_t i = 1; i < vocab_size; ++i) {
+        float val = static_cast<float>(logits_base[i]);
+        if (val > best_val) {
+            best_val = val;
+            best = static_cast<int32_t>(i);
+        }
+    }
+    return best;
 }
 int32_t Executor::sample() const {
     Tensor* logits = find_tensor("logits"); // [1, seq_len, vocab_size]，bf16
@@ -253,6 +277,59 @@ int32_t Executor::sample() const {
         if (rand_val <= cum_prob) {
             return static_cast<int32_t>(i);
         }
+    }
+    return 0;
+}
+int32_t Executor::sample_top_p(float temperature, float top_p) const {
+    Tensor* logits = find_tensor("logits");
+    if (!logits || !logits->data) {
+        throw std::runtime_error("Executor::sample_top_p: logits tensor not computed");
+    }
+    const size_t vocab_size = scheduler_.vocab_size();
+    int32_t target_seq_pos = this->seq_pos_ - 1;
+    const bfloat16_t* logits_base = static_cast<const bfloat16_t*>(logits->data) + target_seq_pos * vocab_size;
+
+    auto probs = ops::Softmax(std::span<const bfloat16_t>(logits_base, vocab_size), temperature);
+
+    // 按概率降序排序
+    std::vector<std::pair<float, int32_t>> sorted_probs(vocab_size);
+    for (size_t i = 0; i < vocab_size; ++i) {
+        sorted_probs[i] = {probs[i], static_cast<int32_t>(i)};
+    }
+    std::sort(sorted_probs.begin(), sorted_probs.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+
+    // Top-p 截断
+    if (top_p > 0.0f && top_p < 1.0f) {
+        float cumsum = 0;
+        size_t cutoff = vocab_size;
+        for (size_t i = 0; i < vocab_size; ++i) {
+            cumsum += sorted_probs[i].first;
+            if (cumsum >= top_p) {
+                cutoff = i + 1;
+                break;
+            }
+        }
+        float truncated_sum = 0.0f;
+        for (size_t i = 0; i < cutoff; ++i) truncated_sum += sorted_probs[i].first;
+
+        thread_local std::mt19937 rng{std::random_device{}()};
+        float rand_val = std::uniform_real_distribution<float>{0.0f, 1.0f}(rng);
+        float cum_prob = 0.0f;
+        for (size_t i = 0; i < cutoff; ++i) {
+            cum_prob += sorted_probs[i].first / truncated_sum;
+            if (rand_val <= cum_prob) return sorted_probs[i].second;
+        }
+        return sorted_probs[0].second;
+    }
+
+    // 全分布采样
+    thread_local std::mt19937 rng{std::random_device{}()};
+    float rand_val = std::uniform_real_distribution<float>{0.0f, 1.0f}(rng);
+    float cum_prob = 0.0f;
+    for (size_t i = 0; i < vocab_size; ++i) {
+        cum_prob += probs[i];
+        if (rand_val <= cum_prob) return static_cast<int32_t>(i);
     }
     return 0;
 }

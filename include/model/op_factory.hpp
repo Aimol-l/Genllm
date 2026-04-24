@@ -115,7 +115,7 @@ public:
     // rms_norm: y = (x / sqrt(mean(x²)+eps)) * weight
     // ──────────────────────────────────────────────────────────────────
     static Tensor* rms_norm(
-        Tensor* input,
+        Tensor* input,      // [batch, seq_len, hidden_size] or  [batch, num_heads, seq_len, head_dim]
         const TensorInfo* weight_info,
         float eps,
         const std::string& name = "",
@@ -132,6 +132,8 @@ public:
         t->src[0] = input;
         t->src[1] = OpFactory::weight_placeholder(weight_info, weight_info->name,layer_id);
         t->op_params[0] = eps;
+
+        
         OpFactory::compute_strides(t);
 
         return t;

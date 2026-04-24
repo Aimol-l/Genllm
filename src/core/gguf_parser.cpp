@@ -2,7 +2,7 @@
 #include <cassert>
 #include <cstddef>
 
-GGUFParser::GGUFParser(const std::string& filename,bool pre_transpose) {
+GGUFParser::GGUFParser(const std::string& filename) {
     file_.open(filename, std::ios::binary);
     if (!file_) {
         throw std::runtime_error("Failed to open file: " + filename);
@@ -12,7 +12,6 @@ GGUFParser::GGUFParser(const std::string& filename,bool pre_transpose) {
         throw std::runtime_error("Invalid GGUF file: magic number mismatch (expected 'GGUF')");
     }
     this->info_ = parse();
-    this->info_.pre_transpose = pre_transpose;
 }
 
 GGUFParser::~GGUFParser() {
@@ -28,39 +27,9 @@ void GGUFParser::read_tensor_data(uint64_t tensor_offset, void* dst, size_t size
         throw std::runtime_error(std::format(
             "GGUFParser: seek to {} (base={}) failed", abs_offset, data_offset_));
     }
-
-    if (info_.pre_transpose) {
-        // 先读到临时缓冲区
-        std::vector<std::byte> buf(size); // dim=[tensor->dims[1],tensor->dims[0]],需要转置到 [tensor->dims[0],tensor->dims[1]]
-        file_.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(size));
-        if (!file_) {
-            throw std::runtime_error(std::format("GGUFParser: read {} bytes at offset {} failed", size, abs_offset));
-        }
-        // 判断张量维度数
-        int ndim = 0;
-        for (int i = 0; i < TENSOR_MAX_DIMS && tensor->dims[i] != 0; ++i) ++ndim;
-
-        if (ndim == 2) {
-            size_t esz = data_type_size(tensor->dtype);
-            int64_t rows = tensor->dims[1]; // 文件中的行数
-            int64_t cols = tensor->dims[0]; // 文件中的列数
-            auto* out = static_cast<std::byte*>(dst);
-            // 转置 [rows, cols] → [cols, rows]
-            for (int64_t i = 0; i < rows; ++i) {
-                for (int64_t j = 0; j < cols; ++j) {
-                    std::memcpy(out + (j * rows + i) * esz,
-                                buf.data() + (i * cols + j) * esz,
-                                esz);
-                }
-            }
-        } else {
-            std::memcpy(dst, buf.data(), size);
-        }
-    } else {
-        file_.read(static_cast<char*>(dst), static_cast<std::streamsize>(size));
-        if (!file_) {
-            throw std::runtime_error(std::format("GGUFParser: read {} bytes at offset {} failed", size, abs_offset));
-        }
+    file_.read(static_cast<char*>(dst), static_cast<std::streamsize>(size));
+    if (!file_) {
+        throw std::runtime_error(std::format("GGUFParser: read {} bytes at offset {} failed", size, abs_offset));
     }
 }
 
@@ -80,6 +49,7 @@ GGUFInfo GGUFParser::parse() {
 
     // 解析 metadata
     info.metadata = this->parse_metadata(info.metadata_kv_count);
+    
 
     // 解析张量信息
     info.tensors_info = this->parse_tensors_info(info.tensor_count);
@@ -113,11 +83,7 @@ std::vector<TensorInfo> GGUFParser::parse_tensors_info(uint64_t tensor_count) {
         assert(dims == 1 || dims == 2); // 当前版本只支持1/2维张量
         info.dimensions.resize(dims);
         for (uint32_t d = 0; d < dims; d++) {
-            if(!this->info_.pre_transpose){ // 目前只对二维权重张量预转置，其他张量保持原维度顺序
-                info.dimensions[dims - d -1] = static_cast<int64_t>(read_uint64_le()); // 反转维度顺序，更符合pytorch的行优先存储习惯
-            } else {
-                info.dimensions[d] = static_cast<int64_t>(read_uint64_le());
-            }
+            info.dimensions[dims - d -1] = static_cast<int64_t>(read_uint64_le()); // 反转维度顺序，更符合pytorch的行优先存储习惯
         }
         info.dtype = static_cast<DataType>(read_uint32_le());
         info.offset = read_uint64_le();

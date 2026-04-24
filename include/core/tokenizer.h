@@ -20,6 +20,9 @@ private:
     bool add_eos_ = false;
     std::string pre_type_; // "qwen2", "llama3", etc.
 
+    std::unordered_map<std::string, int32_t> added_tokens_map_;
+    std::vector<std::pair<std::string, int32_t>> added_tokens_;
+
 public:
     // 从 GGUF 文件加载词表
     static Tokenizer from_gguf(GGUFParser& parser);

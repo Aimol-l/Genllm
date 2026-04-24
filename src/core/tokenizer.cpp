@@ -3,56 +3,51 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstring>
+#include <uchar.h>
 #include "core/tokenizer.h"
 
-// ========== GPT-2 byte ↔ unicode 映射 ==========
+// ========== GPT-2 byte <-> unicode mapping ==========
 
-// GPT-2 把每个 byte (0-255) 映射到一个可见 unicode 字符：
-//   - 33-126 (!~), 161-172 (¡¬), 174-255 (®ÿ) 保持不变
-//   - 其余 byte (0-32, 127-160, 173) 映射到 U+0100 开始的连续 codepoint
 static uint32_t g_byte_to_unicode[256];
-static uint8_t  g_unicode_to_byte[512]; // 只用到 index 256-511
+static uint8_t  g_unicode_to_byte[65536];
 
 static void init_byte_unicode_table() {
     static bool initialized = false;
     if (initialized) return;
     initialized = true;
 
-    // 直接映射的字节范围
+    // 直接映射的字节范围 (与 GPT-2 一致)
     std::vector<int> direct;
     for (int b = 33; b <= 126; ++b) direct.push_back(b);
     for (int b = 161; b <= 172; ++b) direct.push_back(b);
     for (int b = 174; b <= 255; ++b) direct.push_back(b);
 
-    // 标记直接映射
+    std::fill(g_unicode_to_byte, g_unicode_to_byte + 65536, uint8_t(0xFF));
+
     for (int b : direct) {
         g_byte_to_unicode[b] = static_cast<uint32_t>(b);
+        g_unicode_to_byte[b] = static_cast<uint8_t>(b);
     }
-    // 非直接映射的字节 → 从 U+0100 开始
     int n = 0;
     for (int b = 0; b < 256; ++b) {
         bool is_direct = false;
         for (int d : direct) { if (d == b) { is_direct = true; break; } }
         if (!is_direct) {
-            g_byte_to_unicode[b] = 256 + n;
-            g_unicode_to_byte[256 + n] = static_cast<uint8_t>(b);
+            uint32_t cp = 256 + n;
+            g_byte_to_unicode[b] = cp;
+            g_unicode_to_byte[cp] = static_cast<uint8_t>(b);
             ++n;
         }
     }
-    // 直接映射的反向表
-    for (int b : direct) {
-        g_unicode_to_byte[b] = static_cast<uint8_t>(b);
-    }
 }
 
-// 把原始字节序列转为 GPT-2 unicode 字符串
 static std::string bytes_to_unicode(const std::string& raw) {
     std::string out;
-    out.reserve(raw.size() * 2); // worst case
+    out.reserve(raw.size() * 2);
     for (uint8_t b : raw) {
         uint32_t cp = g_byte_to_unicode[b];
-        // encode codepoint to UTF-8
         if (cp < 0x80) {
             out += static_cast<char>(cp);
         } else if (cp < 0x800) {
@@ -72,7 +67,6 @@ static std::string bytes_to_unicode(const std::string& raw) {
     return out;
 }
 
-// 把 GPT-2 unicode 字符串还原为原始字节
 static std::string unicode_to_bytes(const std::string& mapped) {
     std::string out;
     out.reserve(mapped.size());
@@ -89,12 +83,14 @@ static std::string unicode_to_bytes(const std::string& mapped) {
         } else {
             cp = (*p & 0x07) << 18; cp |= (p[1] & 0x3F) << 12; cp |= (p[2] & 0x3F) << 6; cp |= (p[3] & 0x3F); p += 4;
         }
-        out += static_cast<char>(g_unicode_to_byte[cp & 0x1FF]);
+        if (cp < 65536 && g_unicode_to_byte[cp] != 0xFF) {
+            out += static_cast<char>(g_unicode_to_byte[cp]);
+        }
     }
     return out;
 }
 
-// ========== UTF-8 工具 ==========
+// ========== UTF-8 helpers ==========
 
 static int utf8_char_len(uint8_t c) {
     if (c < 0x80) return 1;
@@ -104,22 +100,28 @@ static int utf8_char_len(uint8_t c) {
     return 1;
 }
 
-static bool is_alpha(uint8_t c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-}
-static bool is_digit(uint8_t c) {
-    return c >= '0' && c <= '9';
-}
-static bool is_space(uint8_t c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+static char32_t utf8_decode(const char* s, int& len) {
+    uint8_t c = static_cast<uint8_t>(*s);
+    if (c < 0x80) { len = 1; return c; }
+    if ((c & 0xE0) == 0xC0) { len = 2; return ((c & 0x1F) << 6) | (s[1] & 0x3F); }
+    if ((c & 0xF0) == 0xE0) { len = 3; return ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F); }
+    len = 4; return ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) | ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
 }
 
-// 字母/数字/UTF-8多字节起始（视为"标识符字符"，类似 \p{L}|\p{N}）
-static bool is_alnum_utf8(const char* s, const char* end) {
-    if (s >= end) return false;
-    uint8_t c = static_cast<uint8_t>(*s);
-    if (is_alpha(c) || is_digit(c)) return true;
-    return c >= 0xC0; // UTF-8 多字节起始字节 → 视为 letter
+static bool unicode_is_letter(char32_t cp) {
+    return std::isalpha(cp);
+}
+
+static bool unicode_is_digit(char32_t cp) {
+    return std::isdigit(cp);
+}
+
+static bool unicode_is_space(char32_t cp) {
+    return cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == '\f' || cp == '\v';
+}
+
+static bool unicode_is_newline(char32_t cp) {
+    return cp == '\n' || cp == '\r';
 }
 
 // ========== from_gguf ==========
@@ -148,7 +150,6 @@ Tokenizer Tokenizer::from_gguf(GGUFParser& parser) {
     tok.add_bos_ = get_i64("tokenizer.ggml.add_bos") == 1;
     tok.add_eos_ = get_i64("tokenizer.ggml.add_eos") == 1;
 
-    // load vocab (已在 GPT-2 unicode 表示下)
     if (!meta.contains("tokenizer.ggml.tokens") || !meta["tokenizer.ggml.tokens"].is_array())
         throw std::runtime_error("Tokenizer: tokenizer.ggml.tokens not found");
 
@@ -159,7 +160,6 @@ Tokenizer Tokenizer::from_gguf(GGUFParser& parser) {
         tok.vocab_map_[tok.vocab_[i]] = static_cast<int32_t>(i);
     }
 
-    // load merges → bpe_ranks (也在 GPT-2 unicode 表示下)
     if (meta.contains("tokenizer.ggml.merges") && meta["tokenizer.ggml.merges"].is_array()) {
         auto& merges_arr = meta["tokenizer.ggml.merges"];
         for (size_t i = 0; i < merges_arr.size(); ++i) {
@@ -170,20 +170,63 @@ Tokenizer Tokenizer::from_gguf(GGUFParser& parser) {
         }
     }
 
+    for (size_t i = 0; i < tok.vocab_.size(); ++i) {
+        if (tok.vocab_[i].empty()) continue;
+        auto pieces = tok.pre_tokenize(tok.vocab_[i]);
+        if (pieces.size() > 1) {
+            tok.added_tokens_map_[tok.vocab_[i]] = static_cast<int32_t>(i);
+        }
+    }
+
+    tok.added_tokens_.assign(tok.added_tokens_map_.begin(), tok.added_tokens_map_.end());
+    std::sort(tok.added_tokens_.begin(), tok.added_tokens_.end(),
+        [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
+
     return tok;
 }
 
-// ========== pre_tokenize ==========
+// ========== pre_tokenize (state machine) ==========
+//
+// 实现 Qwen3/GPT-2 的完整正则:
+//   '(?i:[sdmt]|ll|ve|re)             英文缩写
+//   [^\r\n\p{L}\p{N}]?\p{L}+          可选前导非字母数字 + 字母
+//   \p{N}{1,3}                        1-3位数字
+//    ?[^\s\p{L}\p{N}]+[\r\n]*         可选空格 + 标点 + 拖尾换行
+//   \s*[\r\n]+                        空白 + 换行
+//   \s+(?!\S)                         拖尾空白
+//   \s+                               其余空白
 
-// Qwen2 / GPT-2 风格的 pre-tokenization。
-// 核心规则（regex 等价）：
-//   [^\r\n\p{L}\p{N}]?\p{L}+   可选一个非字母数字非换行 + 字母序列
-//   \p{N}+                       数字序列
-//    ?[^\s\p{L}\p{N}]+[\r\n]*   可选空格 + 标点 + 可选拖尾换行
-//   \s*[\r\n]+                   空白 + 换行
-//   \s+(?!\S)                    拖尾空白
-//   \s+                          其余空白
-// 关键：空格被附在前面的 word/punctuation 片段上（由第一条和第三条规则捕获）
+// 检查是否匹配英文缩写: 's, 't, 'd, 'm, 'S, 'T, 'D, 'M, 'll, 've, 're, 'LL, 'VE, 'RE
+static int match_contraction(const char* p, const char* end) {
+    // p 指向 "'" 字符
+    if (p + 1 >= end) return 0;
+    char next = p[1];
+    switch (next) {
+        case 's': case 't': case 'd': case 'm':
+        case 'S': case 'T': case 'D': case 'M':
+            return 2; // 's 't 'd 'm (及大写)
+        case 'l':
+            if (p + 2 < end && (p[2] == 'l' || p[2] == 'L')) return 3; // 'll 'LL
+            return 0;
+        case 'L':
+            if (p + 2 < end && (p[2] == 'l' || p[2] == 'L')) return 3;
+            return 0;
+        case 'v':
+            if (p + 2 < end && (p[2] == 'e' || p[2] == 'E')) return 3; // 've 'VE
+            return 0;
+        case 'V':
+            if (p + 2 < end && (p[2] == 'e' || p[2] == 'E')) return 3;
+            return 0;
+        case 'r':
+            if (p + 2 < end && (p[2] == 'e' || p[2] == 'E')) return 3; // 're 'RE
+            return 0;
+        case 'R':
+            if (p + 2 < end && (p[2] == 'e' || p[2] == 'E')) return 3;
+            return 0;
+        default:
+            return 0;
+    }
+}
 
 std::vector<std::string> Tokenizer::pre_tokenize(const std::string& text) const {
     std::vector<std::string> pieces;
@@ -195,95 +238,174 @@ std::vector<std::string> Tokenizer::pre_tokenize(const std::string& text) const 
     };
 
     while (p < end) {
-        const char* start = p;
+        int clen;
+        char32_t cp = utf8_decode(p, clen);
 
-        // A) [^\r\n\p{L}\p{N}]?\p{L}+  — 可选前导字符 + 字母序列
-        //    前导字符可以是空格、标点等（但不是换行/字母/数字）
-        {
-            const char* q = p;
-            bool has_leader = false;
-            if (q < end && !is_space(*q) && *q != '\r' && *q != '\n' && !is_alnum_utf8(q, end)) {
-                q += utf8_char_len(*q);
-                has_leader = true;
+        // ===== 规则 1: '(?i:[sdmt]|ll|ve|re) 英文缩写 =====
+        if (cp == '\'' && match_contraction(p, end) > 0) {
+            int mlen = match_contraction(p, end);
+            emit(p, p + mlen);
+            p += mlen;
+            continue;
+        }
+
+        // ===== 规则 2: [^\r\n\p{L}\p{N}]?\p{L}+ =====
+        bool is_letter = unicode_is_letter(cp);
+        bool is_digit = unicode_is_digit(cp);
+        bool is_space = unicode_is_space(cp);
+        bool is_newline = unicode_is_newline(cp);
+
+        if (is_letter) {
+            const char* start = p;
+            p += clen;
+            while (p < end) {
+                int nlen;
+                char32_t ncp = utf8_decode(p, nlen);
+                if (unicode_is_letter(ncp)) {
+                    p += nlen;
+                } else {
+                    break;
+                }
             }
-            // 如果 q 没前进（没有 leader），检查 q 位置是否是字母
-            // 如果 q 前进了但有 leader，检查后续是否是字母
-            const char* letter_start = q;
-            while (q < end && is_alnum_utf8(q, end) && !is_digit(*q)) {
-                // 排除纯数字（数字由单独规则处理）
-                q += utf8_char_len(*q);
-            }
-            // 检查我们是否真的匹配了字母（至少一个）
-            if (q > letter_start && is_alpha(*letter_start)) {
-                emit(start, q);
-                p = q;
-                continue;
-            }
-            if (q > letter_start && static_cast<uint8_t>(*letter_start) >= 0xC0) {
-                // UTF-8 多字节作为"字母"
-                emit(start, q);
-                p = q;
+            emit(start, p);
+            continue;
+        }
+
+        // 有前导非字母数字非换行的 + 字母
+        if (!is_space && !is_newline && !is_digit && !is_letter && p + clen < end) {
+            // 向前看：前导字符后面是否紧跟字母
+            int nlen;
+            char32_t ncp = utf8_decode(p + clen, nlen);
+            if (unicode_is_letter(ncp)) {
+                const char* start = p;
+                p += clen; // 跳过前导字符
+                // 消耗字母序列
+                while (p < end) {
+                    char32_t c2 = utf8_decode(p, nlen);
+                    if (unicode_is_letter(c2)) {
+                        p += nlen;
+                    } else {
+                        break;
+                    }
+                }
+                emit(start, p);
                 continue;
             }
         }
 
-        // B) 可选空格 + 字母序列 (空格作为 leader)
-        if (*p == ' ' && p + 1 < end) {
-            const char* after_space = p + 1;
-            uint8_t ac = static_cast<uint8_t>(*after_space);
-            if (is_alpha(ac) || ac >= 0xC0) {
-                const char* q = after_space;
-                while (q < end && (is_alpha(static_cast<uint8_t>(*q)) || static_cast<uint8_t>(*q) >= 0xC0))
-                    q += utf8_char_len(static_cast<uint8_t>(*q));
-                if (q > after_space) {
-                    emit(start, q);
-                    p = q;
+        // ===== 规则 3: \p{N}{1,3} =====
+        if (is_digit) {
+            const char* start = p;
+            int count = 0;
+            while (p < end && count < 3) {
+                int nlen;
+                char32_t ncp = utf8_decode(p, nlen);
+                if (unicode_is_digit(ncp)) {
+                    p += nlen;
+                    count++;
+                } else {
+                    break;
+                }
+            }
+            emit(start, p);
+            continue;
+        }
+
+        // ===== 规则 4:  ?[^\s\p{L}\p{N}]+[\r\n]* =====
+        // 可选空格 + 标点/符号 + 可选拖尾换行
+        if (!is_space && !is_newline && !is_digit && !is_letter) {
+            const char* start = p;
+            // 如果前面是空格（作为前导），回退包含它
+            // 注意: 到这里说明前面不是字母也不是数字，前面可能是空格
+            // 实际上前导空格在前面 "有前导字符 + 字母" 规则中已处理
+            // 纯标点/符号序列
+            while (p < end) {
+                int nlen;
+                char32_t ncp = utf8_decode(p, nlen);
+                if (!unicode_is_space(ncp) && !unicode_is_letter(ncp) && !unicode_is_digit(ncp)) {
+                    p += nlen;
+                } else {
+                    break;
+                }
+            }
+            // 拖尾换行
+            while (p < end && unicode_is_newline(utf8_decode(p, clen))) {
+                p += clen;
+            }
+            emit(start, p);
+            continue;
+        }
+
+        // 空格作为标点的前导: " ?[^\s\p{L}\p{N}]"
+        if (cp == ' ') {
+            // 向前看: 空格后面是否跟着标点
+            if (p + 1 < end) {
+                int nlen;
+                char32_t ncp = utf8_decode(p + 1, nlen);
+                if (!unicode_is_space(ncp) && !unicode_is_newline(ncp) &&
+                    !unicode_is_letter(ncp) && !unicode_is_digit(ncp)) {
+                    // 空格 + 标点
+                    const char* start = p;
+                    p += 1; // 跳过空格
+                    while (p < end) {
+                        int nnlen;
+                        char32_t nncp = utf8_decode(p, nnlen);
+                        if (!unicode_is_space(nncp) && !unicode_is_letter(nncp) && !unicode_is_digit(nncp)) {
+                            p += nnlen;
+                        } else {
+                            break;
+                        }
+                    }
+                    // 拖尾换行
+                    while (p < end && unicode_is_newline(utf8_decode(p, clen))) {
+                        p += clen;
+                    }
+                    emit(start, p);
                     continue;
                 }
             }
         }
 
-        // C) \p{N}+ — 数字序列
-        if (is_digit(*p)) {
-            while (p < end && is_digit(*p)) ++p;
-            emit(start, p);
-            continue;
-        }
-
-        // D) 可选空格 + 标点 + 可选拖尾换行
-        if (*p == ' ' || !is_space(*p)) {
-            const char* q = p;
-            if (*q == ' ') ++q; // 消耗可选前导空格
-            const char* punct_start = q;
-            while (q < end && !is_space(*q) && !is_alnum_utf8(q, end)) {
-                q += utf8_char_len(*q);
+        // ===== 规则 5: \s*[\r\n]+ =====
+        if (is_space || is_newline) {
+            const char* start = p;
+            // 消耗前置空白
+            while (p < end) {
+                int nlen;
+                char32_t ncp = utf8_decode(p, nlen);
+                if (unicode_is_space(ncp) && !unicode_is_newline(ncp)) {
+                    p += nlen;
+                } else {
+                    break;
+                }
             }
-            if (q > punct_start) {
-                // 消耗拖尾换行
-                while (q < end && (*q == '\r' || *q == '\n')) ++q;
-                emit(start, q);
-                p = q;
+            // 如果后面有换行，匹配规则 5
+            if (p < end && unicode_is_newline(utf8_decode(p, clen))) {
+                while (p < end) {
+                    int nlen;
+                    char32_t ncp = utf8_decode(p, nlen);
+                    if (unicode_is_newline(ncp)) {
+                        p += nlen;
+                    } else {
+                        break;
+                    }
+                }
+                emit(start, p);
                 continue;
             }
-        }
 
-        // E) 换行
-        if (*p == '\n' || *p == '\r') {
-            while (p < end && (*p == '\n' || *p == '\r')) ++p;
+            // ===== 规则 6/7: \s+(?!\S) 或 \s+ =====
+            // 检查是否是拖尾空白（后面没有非空白字符）
+            bool trailing = (p >= end) || unicode_is_space(utf8_decode(p, clen));
+            p = end; // 已经消耗到末尾或空白末尾
+            // 回退: start 到 p 就是空白
             emit(start, p);
             continue;
         }
 
-        // F) 其余空白
-        if (is_space(*p)) {
-            while (p < end && is_space(*p) && *p != '\n' && *p != '\r') ++p;
-            emit(start, p);
-            continue;
-        }
-
-        // G) 单字符 fallback
-        p += utf8_char_len(*p);
-        emit(start, p);
+        // Fallback: 单字符
+        p += clen;
+        emit(p - clen, p);
     }
 
     return pieces;
@@ -298,78 +420,67 @@ struct Symbol {
 };
 
 std::vector<int32_t> Tokenizer::bpe(const std::string& word) const {
-    // word 已经过 bytes_to_unicode 映射
     if (word.empty()) return {};
 
-    // 拆分为单个 UTF-8 字符
     std::vector<Symbol> symbols;
     const char* p = word.data();
     const char* wend = p + word.size();
     while (p < wend) {
         int len = utf8_char_len(*p);
-        symbols.push_back({std::string(p, len),
-                           static_cast<int>(symbols.size()) - 1,
-                           static_cast<int>(symbols.size()) + 1});
+        symbols.push_back({std::string(p, len)});
         p += len;
     }
-    if (!symbols.empty()) {
-        symbols.front().prev = -1;
-        symbols.back().next = -1;
-    }
+    if (symbols.empty()) return {};
 
     if (symbols.size() == 1) {
         auto it = vocab_map_.find(symbols[0].text);
         return (it != vocab_map_.end()) ? std::vector<int32_t>{it->second} : std::vector<int32_t>{};
     }
 
-    // 优先队列：min-heap by rank
-    using Bigram = std::pair<int32_t, std::pair<int, int>>;
-    std::priority_queue<Bigram, std::vector<Bigram>, std::greater<Bigram>> queue;
-
-    // 初始 bigrams
-    for (int i = 0; i < static_cast<int>(symbols.size()) - 1; ++i) {
-        auto it = bpe_ranks_.find({symbols[i].text, symbols[i + 1].text});
-        if (it != bpe_ranks_.end()) queue.push({it->second, {i, i + 1}});
+    // 建立链表
+    for (int i = 0; i < static_cast<int>(symbols.size()); ++i) {
+        symbols[i].prev = i - 1;
+        symbols[i].next = (i + 1 < static_cast<int>(symbols.size())) ? i + 1 : -1;
     }
 
-    while (!queue.empty()) {
-        auto [rank, pair] = queue.top();
-        queue.pop();
-        int left = pair.first, right = pair.second;
+    // 贪心 BPE: 每轮找 rank 最小的相邻 pair 合并
+    while (true) {
+        int best_rank = INT32_MAX;
+        int best_idx = -1;
 
-        if (left < 0 || left >= static_cast<int>(symbols.size())) continue;
-        if (right < 0 || right >= static_cast<int>(symbols.size())) continue;
-        if (symbols[left].next != right) continue;
-
-        auto it = bpe_ranks_.find({symbols[left].text, symbols[right].text});
-        if (it == bpe_ranks_.end() || it->second != rank) continue;
-
-        // 合并 right → left
-        symbols[left].text += symbols[right].text;
-        symbols[left].next = symbols[right].next;
-        if (symbols[right].next >= 0)
-            symbols[symbols[right].next].prev = left;
-
-        // 新 bigrams
-        if (symbols[left].prev >= 0) {
-            int pv = symbols[left].prev;
-            auto pit = bpe_ranks_.find({symbols[pv].text, symbols[left].text});
-            if (pit != bpe_ranks_.end()) queue.push({pit->second, {pv, left}});
+        for (int i = 0; i < static_cast<int>(symbols.size()); ++i) {
+            if (symbols[i].next < 0) continue;
+            int j = symbols[i].next;
+            auto it = bpe_ranks_.find({symbols[i].text, symbols[j].text});
+            if (it != bpe_ranks_.end() && it->second < best_rank) {
+                best_rank = it->second;
+                best_idx = i;
+            }
         }
-        if (symbols[left].next >= 0) {
-            int nx = symbols[left].next;
-            auto nit = bpe_ranks_.find({symbols[left].text, symbols[nx].text});
-            if (nit != bpe_ranks_.end()) queue.push({nit->second, {left, nx}});
-        }
+
+        if (best_idx < 0) break;
+
+        int j = symbols[best_idx].next;
+        symbols[best_idx].text += symbols[j].text;
+        symbols[best_idx].next = symbols[j].next;
+        if (symbols[j].next >= 0)
+            symbols[symbols[j].next].prev = best_idx;
+        symbols[j].prev = -2; // 标记已删除
     }
 
-    // 沿链表遍历存活的 symbol，转换为 token IDs
+    // 沿链表收集结果
     std::vector<int32_t> result;
-    int head = 0; // 第一个 symbol 的 prev == -1
-    for (int i = head; i >= 0 && i < static_cast<int>(symbols.size()); ) {
-        auto it = vocab_map_.find(symbols[i].text);
-        if (it != vocab_map_.end()) result.push_back(it->second);
-        i = symbols[i].next;
+    for (int i = 0; i < static_cast<int>(symbols.size()); ++i) {
+        if (symbols[i].prev == -2) continue; // 已合并
+        if (symbols[i].prev != -1 && symbols[i].prev != -2) continue; // 不是 head
+        // 从 head 开始遍历
+        int cur = i;
+        while (cur >= 0) {
+            auto it = vocab_map_.find(symbols[cur].text);
+            if (it != vocab_map_.end()) result.push_back(it->second);
+            cur = symbols[cur].next;
+        }
+        break; // 只有一个 head
     }
     return result;
 }
@@ -382,12 +493,44 @@ std::vector<int32_t> Tokenizer::encode(const std::string& text) const {
     if (add_bos_ && bos_id_ >= 0)
         tokens.push_back(bos_id_);
 
-    auto pieces = pre_tokenize(text);
-    for (auto& piece : pieces) {
-        // 把原始字节转为 GPT-2 unicode 表示后再 BPE
-        std::string mapped = bytes_to_unicode(piece);
-        auto ids = bpe(mapped);
-        tokens.insert(tokens.end(), ids.begin(), ids.end());
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t earliest = std::string::npos;
+        int32_t matched_id = -1;
+        size_t matched_len = 0;
+
+        for (const auto& [tok_text, tok_id] : added_tokens_) {
+            size_t found = text.find(tok_text, pos);
+            if (found < earliest) {
+                earliest = found;
+                matched_id = tok_id;
+                matched_len = tok_text.size();
+            }
+        }
+
+        if (earliest == std::string::npos) {
+            std::string rest = text.substr(pos);
+            auto pieces = pre_tokenize(rest);
+            for (auto& piece : pieces) {
+                std::string mapped = bytes_to_unicode(piece);
+                auto ids = bpe(mapped);
+                tokens.insert(tokens.end(), ids.begin(), ids.end());
+            }
+            break;
+        }
+
+        if (earliest > pos) {
+            std::string before = text.substr(pos, earliest - pos);
+            auto pieces = pre_tokenize(before);
+            for (auto& piece : pieces) {
+                std::string mapped = bytes_to_unicode(piece);
+                auto ids = bpe(mapped);
+                tokens.insert(tokens.end(), ids.begin(), ids.end());
+            }
+        }
+
+        tokens.push_back(matched_id);
+        pos = earliest + matched_len;
     }
 
     if (add_eos_ && eos_id_ >= 0)
@@ -415,7 +558,6 @@ std::string Tokenizer::token_to_text(int32_t id) const {
         return std::string(1, static_cast<char>(byte));
     }
 
-    // 常规 token：从 GPT-2 unicode 还原为原始字节
     return unicode_to_bytes(tok);
 }
 
