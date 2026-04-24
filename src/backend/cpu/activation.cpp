@@ -1,6 +1,6 @@
 #include <cmath>
-#include "backend/cpu/activation.h"
 #include "utils/dtype_traits.hpp"
+#include "backend/cpu/activation.h"
 
 namespace ops {
 

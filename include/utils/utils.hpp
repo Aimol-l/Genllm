@@ -1,15 +1,6 @@
 #pragma once
 #include <cstdint>
 #include <string>
-// #define RUNNING_TIME(expr) \
-//     do { \
-//         auto start = std::chrono::steady_clock::now(); \
-//         expr; \
-//         auto end = std::chrono::steady_clock::now(); \
-//         std::chrono::duration<double, std::milli> duration = end - start; \
-//         std::cout << "Execution time: " << duration.count() << "ms" << std::endl; \
-//     } while (0)
-
 
 // 支持的后端设备
 enum class Device: uint8_t {
@@ -116,7 +107,6 @@ enum class OperationType:uint8_t {
     OP_TYPE_APPLY_ROPE,
     OP_TYPE_SDPA,
     OP_TYPE_TOKENIZE,
-    OP_TYPE_SAMPLING,
     OP_TYPE_ROPE_CACHE,
     OP_TYPE_CONV2D,
     OP_TYPE_FLASH_ATTN
@@ -231,7 +221,6 @@ inline std::string operation_type_to_string(OperationType op) {
         case OperationType::OP_TYPE_APPLY_ROPE:    return "Rope";
         case OperationType::OP_TYPE_SDPA:          return "SDPA";
         case OperationType::OP_TYPE_TOKENIZE:      return "Tokenize";
-        case OperationType::OP_TYPE_SAMPLING:      return "Sampling";
         case OperationType::OP_TYPE_ROPE_CACHE:    return "RopeCache";
         case OperationType::OP_TYPE_CONV2D:        return "Conv2D";
         case OperationType::OP_TYPE_FLASH_ATTN:    return "FlashAttn";

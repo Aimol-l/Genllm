@@ -1,6 +1,7 @@
 #pragma once
 #include "tensor.hpp"
 #include "utils/bfloat16.hpp"
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -8,6 +9,38 @@
 #include <format>
 #include <print>
 #include <cstring>
+
+// ANSI 颜色代码
+#define COLOR_RESET  "\033[0m"
+#define COLOR_RED    "\033[31m"
+#define COLOR_YELLOW "\033[33m"
+#define COLOR_CYAN   "\033[36m"
+
+// 日志基础宏（内部使用）
+#define LOG_BASE(level, color, msg) do { \
+    auto now = std::chrono::system_clock::now(); \
+    std::time_t t = std::chrono::system_clock::to_time_t(now); \
+    std::tm tm_info; \
+    localtime_r(&t, &tm_info); \
+    std::cerr << color << "[" << level << "] " \
+              << std::put_time(&tm_info, "%Y-%m-%d %H:%M:%S") \
+              << " [" << __FILE__ << ":" << __LINE__ << "]" \
+              << " (" << __func__ << "): " << msg << COLOR_RESET << std::endl; \
+} while (0)
+
+// 公开使用的日志宏
+#define LOG_INFO(msg)  LOG_BASE("INFO",  COLOR_CYAN,   msg)
+#define LOG_WARN(msg)  LOG_BASE("WARN",  COLOR_YELLOW, msg)
+#define LOG_ERROR(msg) LOG_BASE("ERROR", COLOR_RED,    msg)
+
+#define RUNNING_TIME(expr) \
+    do { \
+        auto start = std::chrono::steady_clock::now(); \
+        expr; \
+        auto end = std::chrono::steady_clock::now(); \
+        std::chrono::duration<double, std::milli> duration = end - start; \
+        std::cout << "Execution time: " << duration.count() << "ms" << std::endl; \
+    } while (0)
 
 
 namespace ops{

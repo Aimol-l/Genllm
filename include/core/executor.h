@@ -21,8 +21,13 @@ private:
     std::unordered_map<std::string, InputBinding> inputs_;
 
     std::unique_ptr<ThreadPool> pool_;  // 固定线程池，生命周期跟随 Executor
-    std::vector<std::vector<Tensor*>> persistent_levels_; // 持久化节点按层分组
-    std::vector<std::vector<Tensor*>> step_levels_;       // 其余计算节点按层分组
+
+    struct LayerGroup {
+        int layer_id;
+        std::vector<std::vector<Tensor*>> levels; // 层内的依赖子级别
+    };
+    std::vector<LayerGroup> persistent_layers_;  // CACHE 类型 (layer_id < 0)
+    std::vector<LayerGroup> step_layers_;        // transformer 层，按 layer_id 升序
     
     std::unordered_map<Device, size_t> persistent_cursor_;
     std::unordered_map<std::string, std::array<int64_t, TENSOR_MAX_DIMS>> original_dims_;

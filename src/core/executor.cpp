@@ -35,21 +35,43 @@ Executor::Executor(GraphScheduler& scheduler)
         }
     }
 
-    // 从 execution_levels_ 拆分：CACHE 类型 → persistent，其余可计算节点 → step
+    // 从 execution_levels_ 按 layer_id 分组：CACHE → persistent_layers_，其余 → step_layers_
+    // 用 map 保持 layer_id 有序，后续转为 vector
+    std::map<int, LayerGroup> persistent_map, step_map;
     for (const auto& level : graph_.get_execution_levels()) {
-        std::vector<Tensor*> persistent_level;
-        std::vector<Tensor*> step_level;
         for (Tensor* t : level) {
             if (!t->is_computed()) continue;
-            if (t->type == TensorType::TENSOR_TYPE_CACHE) {
-                persistent_level.push_back(t);
-            } else {
-                step_level.push_back(t);
-            }
+            auto& map = (t->type == TensorType::TENSOR_TYPE_CACHE) ? persistent_map : step_map;
+            auto& grp = map[t->layer_id];
+            grp.layer_id = t->layer_id;
+            grp.levels.push_back({t});
         }
-        if (!persistent_level.empty()) persistent_levels_.push_back(std::move(persistent_level));
-        if (!step_level.empty()) step_levels_.push_back(std::move(step_level));
     }
+    // 合并同一层内同一依赖级别的 tensor（来自同一个 execution_level 的归为同一 sub-level）
+    // 上面每层只有一个 tensor per push_back，需要按 execution_level 归并
+    // 重新构建：按 execution_level 遍历，同一 level + 同一 layer_id 的 tensor 合并
+    persistent_map.clear();
+    step_map.clear();
+    for (const auto& level : graph_.get_execution_levels()) {
+        // 按 layer_id 分桶
+        std::map<int, std::vector<Tensor*>> bucket;
+        for (Tensor* t : level) {
+            if (!t->is_computed()) continue;
+            auto& target_map = (t->type == TensorType::TENSOR_TYPE_CACHE) ? persistent_map : step_map;
+            auto& grp = target_map[t->layer_id];
+            grp.layer_id = t->layer_id;
+            bucket[t->layer_id].push_back(t);
+        }
+        for (auto& [lid, tensors] : bucket) {
+            auto is_cache = tensors.front()->type == TensorType::TENSOR_TYPE_CACHE;
+            auto& target_map = is_cache ? persistent_map : step_map;
+            target_map[lid].levels.push_back(std::move(tensors));
+        }
+    }
+    for (auto& [lid, grp] : persistent_map) persistent_layers_.push_back(std::move(grp));
+    for (auto& [lid, grp] : step_map)     step_layers_.push_back(std::move(grp));
+    std::sort(step_layers_.begin(), step_layers_.end(),
+              [](const LayerGroup& a, const LayerGroup& b) { return a.layer_id < b.layer_id; });
 }
 void Executor::forward() {
     // 绑定 input tensor
@@ -65,11 +87,12 @@ void Executor::forward() {
     }
     // Phase 1: 执行 persistent ops（如 rope_cos/sin），只需算一次
     if (!this->persistent_computed_) {
-        for (const auto& level : persistent_levels_) {
-            for (Tensor* t : level) {
-                pool_->submit([this, t]() { this->execute_tensor(t); });
+        for (const auto& grp : persistent_layers_) {
+            for (const auto& level : grp.levels) {
+                for (Tensor* t : level) {
+                   this->execute_tensor(t); // 直接执行，不用使用线程池
+                }
             }
-            pool_->wait();
         }
         // 记录各设备 activation pool 的 cursor，后续 reset 不能超过这个位置
         for (auto& [dev, id] : dev_id_map_) {
@@ -80,13 +103,19 @@ void Executor::forward() {
         }
         this->persistent_computed_ = true;
     }
-    // Phase 2: reset 到 persistent 之后，按 level 并行执行 step ops
-    this->reset_step_activations();
-    for (const auto& level : step_levels_) {
-        for (Tensor* t : level) {
-            pool_->submit([this, t]() { this->execute_tensor(t); });
+    // Phase 2: 逐层执行 step ops，层间 reset 激活池实现内存复用
+    this->reset_step_activations(); // 清理激活池(但不清理持久数据)
+    for (size_t i = 0; i < step_layers_.size(); ++i) {
+        for (const auto& level : step_layers_[i].levels) {
+            for (Tensor* t : level) {
+                pool_->submit([this, t]() { this->execute_tensor(t); });
+            }
+            pool_->wait();
         }
-        pool_->wait();
+        // 非最后一层时 reset，下一层复用激活池内存
+        if (i + 1 < step_layers_.size()) {
+            this->reset_step_activations();
+        }
     }
 }
 void Executor::execute_tensor(Tensor* t) {
@@ -126,6 +155,7 @@ std::vector<int32_t> Executor::generate(
         if (eos_tokens == next) break;
         output.push_back(next);
         token_cache.push_back(next);
+
         this->decode_step(token_cache);
 
         std::print("\rtokens: {}/{}",i+1,max_tokens);
@@ -146,11 +176,8 @@ void Executor::prefill(const std::vector<int32_t>& token_ids) {
 
 void Executor::decode_step(const std::vector<int32_t>& token_ids) {
     this->is_prefill_ = false;
-    this->reset_step_activations();
-    
     this->resolve_dims(1, static_cast<int64_t>(token_ids.size())); 
     this->bind_input("input_ids", const_cast<int32_t*>(token_ids.data()), token_ids.size() * sizeof(int32_t));
-    
     this->forward();
     ++this->seq_pos_;
 }
@@ -358,7 +385,6 @@ void Executor::dispatch_kernel(Tensor* t) {
         case OperationType::OP_TYPE_SUB:            kernel::sub(t);     break;
         case OperationType::OP_TYPE_MUL:            kernel::mul(t);     break;
         case OperationType::OP_TYPE_DIV:            kernel::div(t);     break;
-        case OperationType::OP_TYPE_SCALE:          kernel::scale(t);   break;
         case OperationType::OP_TYPE_RMS_NORM:       kernel::rms_norm(t);   break;
         case OperationType::OP_TYPE_LAYER_NORM:     kernel::layer_norm(t); break;
         case OperationType::OP_TYPE_MAT_MUL:        kernel::matmul(t);     break;
@@ -375,7 +401,6 @@ void Executor::dispatch_kernel(Tensor* t) {
         case OperationType::OP_TYPE_CONCAT:         kernel::concat(t);  break;
         case OperationType::OP_TYPE_REPEAT:         kernel::repeat(t);  break;
         case OperationType::OP_TYPE_ROPE_CACHE:     kernel::rope_cache(t); break;
-        case OperationType::OP_TYPE_SAMPLING:       kernel::sampling(t);   break;
         default:   throw std::runtime_error(std::format("Executor: unhandled op_type '{}' for tensor '{}'",operation_type_to_string(t->op_type), t->name));
     }
     // auto end = std::chrono::steady_clock::now();

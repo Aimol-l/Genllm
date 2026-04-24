@@ -11,9 +11,9 @@ int main() {
 
     DeviceManager::instance().print_devices();
 
-    GGUFParser parser("models/Qwen3-0.6B-BF16.gguf",true); // 开启预转置，加载时直接转置权重数据，节省推理时Liner算子等的转置开销
+    GGUFParser parser("models/Qwen3-0.6B-BF16.gguf",false); // 开启预转置，加载时直接转置权重数据，节省推理时Liner算子等的转置开销
 
-    // parser.info().print_info();
+    parser.info().print_info();
 
     std::unique_ptr<ModelBase> model = ModelFactory::CreateFromGGUF(parser.info());
 
@@ -33,7 +33,7 @@ int main() {
 
     scheduler.schedule(DeviceManager::instance().get_devices());
 
-    scheduler.export_dot("qwen3_graph.dot");
+    // scheduler.export_dot("qwen3_graph.dot");
 
     std::unique_ptr<MemoryManager>& manager = scheduler.mmanager();
 
@@ -42,8 +42,6 @@ int main() {
     Executor executor(scheduler);
 
     Tokenizer tokenizer = Tokenizer::from_gguf(parser);
-
-    return 0;
 
     // Qwen3 chat 格式
     const std::string user_msg = "1+1=";
@@ -57,11 +55,10 @@ int main() {
     std::println("========================================================");
     try {
 
-        std::vector<int32_t> output = executor.generate(prompt_ids, 256, tokenizer.eos_id());
+        std::vector<int32_t> output = executor.generate(prompt_ids, 48, tokenizer.eos_id());
 
         std::string gen = tokenizer.decode(output);
 
-        std::println("Output IDs: {}", output);
         std::println("Generated: {}", gen);
 
     } catch (const std::exception& e) {

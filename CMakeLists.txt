@@ -36,7 +36,7 @@ project(
 if(BACKEND_CPU)
     find_package(OpenMP REQUIRED)
     add_definitions(-DBACKEND_CPU)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -mavx2 -mfma -fopenmp")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -mavx2 -mf16c -mfma -fopenmp -fno-omit-frame-pointer -g")
 endif()
 
 # cuda配置,avx2,openmp,fma
@@ -46,12 +46,12 @@ if(BACKEND_CUDA)
     set(CMAKE_CUDA_STANDARD 20)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     set(CMAKE_CUDA_EXTENSIONS OFF)
-    
+
     find_package(OpenMP REQUIRED)
     find_package(CUDAToolkit REQUIRED)
-    
+
     set(CMAKE_CUDA_ARCHITECTURES "native")  # 常见现代GPU架构
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -mavx2 -mfma -fopenmp")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -mavx2 -mf16c -mfma -fopenmp -fno-omit-frame-pointer -g")
 endif()
 
 # vk配置,avx2,openmp,fma
@@ -59,7 +59,7 @@ if(BACKEND_VULKAN)
     add_definitions(-DBACKEND_VULKAN)
     find_package(Vulkan REQUIRED)
     find_package(OpenMP REQUIRED)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -mavx2 -mfma -fopenmp")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -mavx2 -mf16c -mfma -fopenmp -fno-omit-frame-pointer -g")
 endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
@@ -144,7 +144,7 @@ if(BACKEND_CPU AND OpenMP_CXX_FOUND)
 endif()
 
 if(BACKEND_CUDA AND CUDAToolkit_FOUND)
-    target_link_libraries(${PROJECT_NAME} PRIVATE CUDA::cudart)
+    target_link_libraries(${PROJECT_NAME} PRIVATE CUDA::cudart CUDA::cublas)
     set_target_properties(${PROJECT_NAME} PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
 endif()
 
@@ -271,7 +271,7 @@ if(BUILD_TEST)
            target_link_libraries(${test_name} PRIVATE OpenMP::OpenMP_CXX)
         endif()
         if(BACKEND_SYCL)
-            target_compile_options(${test_name} PRIVATE -fsycl -O3 -fiopenmp -mavx2 -mfma -fsycl-targets=nvptx64-nvidia-cuda,spir64_x86_64)
+            target_compile_options(${test_name} PRIVATE -fsycl -O2 -fiopenmp -mavx2 -mf16c -mfma -fsycl-targets=nvptx64-nvidia-cuda,spir64_x86_64)
             target_link_libraries(${test_name} PRIVATE ${IntelSYCL_LIBRARIES})
         endif()
         if(BACKEND_CUDA)

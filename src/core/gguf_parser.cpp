@@ -114,9 +114,9 @@ std::vector<TensorInfo> GGUFParser::parse_tensors_info(uint64_t tensor_count) {
         info.dimensions.resize(dims);
         for (uint32_t d = 0; d < dims; d++) {
             if(!this->info_.pre_transpose){ // 目前只对二维权重张量预转置，其他张量保持原维度顺序
-                info.dimensions[d] = static_cast<int64_t>(read_uint64_le());
-            } else {
                 info.dimensions[dims - d -1] = static_cast<int64_t>(read_uint64_le()); // 反转维度顺序，更符合pytorch的行优先存储习惯
+            } else {
+                info.dimensions[d] = static_cast<int64_t>(read_uint64_le());
             }
         }
         info.dtype = static_cast<DataType>(read_uint32_le());

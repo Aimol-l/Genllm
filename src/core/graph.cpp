@@ -1,11 +1,11 @@
-#include "core/graph.h"
 #include <format>
 #include <fstream>
 #include <queue>
 #include <unordered_set>
 #include <unordered_map>
 #include <algorithm>
-
+#include "core/graph.h"
+#include "utils/tools.hpp"
 // ========== private ==========
 
 void ComputeGraph::reverse_bfs_collect(const std::vector<Tensor*>& seeds) {
@@ -117,9 +117,16 @@ ComputeGraph& ComputeGraph::operator=(ComputeGraph&& other) noexcept {
 
 void ComputeGraph::build_from_outputs(std::initializer_list<Tensor*> outputs) {
     this->clear();
+    // LOG_INFO("1");
     this->external_outputs_.assign(outputs);
+    // LOG_INFO("2");
+
     this->reverse_bfs_collect(external_outputs_);
+    // LOG_INFO("3");
+
     this->topological_sort();
+    // LOG_INFO("4");
+
 }
 
 void ComputeGraph::clear() {

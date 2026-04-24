@@ -7,7 +7,6 @@ namespace ops {
     template <Device D> struct SubImpl;
     template <Device D> struct MulImpl;
     template <Device D> struct DivImpl;
-    template <Device D> struct ScaleImpl;
 
     template <>
     struct AddImpl<Device::CPU> {
@@ -29,15 +28,9 @@ namespace ops {
         static void execute(Tensor* out);
     };
 
-    template <>
-    struct ScaleImpl<Device::CPU> {
-        static void execute(Tensor* out);
-    };
-
     extern template struct AddImpl<Device::CPU>;
     extern template struct SubImpl<Device::CPU>;
     extern template struct MulImpl<Device::CPU>;
     extern template struct DivImpl<Device::CPU>;
-    extern template struct ScaleImpl<Device::CPU>;
 
 }

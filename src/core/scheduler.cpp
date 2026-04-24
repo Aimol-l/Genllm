@@ -1,4 +1,5 @@
 #include "core/scheduler.h"
+#include "utils/tools.hpp"
 
 void GraphScheduler::schedule(const std::vector<BackendInfo>& devices) {
     if (devices.empty())
@@ -10,9 +11,9 @@ void GraphScheduler::schedule(const std::vector<BackendInfo>& devices) {
         std::println("[Scheduler] No transformer layers found, nothing to schedule");
         return;
     }
-    this->assignments_ = this->assign_layers(costs, devices);
+    this->assignments_ = this->assign_layers(costs, devices); // 2. 分配连续层到设备
 
-    this->apply_assignment(this->graph_, this->assignments_);
+    this->apply_assignment(this->graph_, this->assignments_); // 实际进行设备分配
     
     Device cpu = Device::CPU;
     for (const auto& d : devices) {
@@ -21,10 +22,11 @@ void GraphScheduler::schedule(const std::vector<BackendInfo>& devices) {
             break; 
         }
     }
-    this->assign_global_nodes(this->graph_, cpu);
-    this->insert_copy_edges(this->graph_);
-    this->create_memory_pools(this->graph_, devices);
+    this->assign_global_nodes(this->graph_, cpu); // 4. 添加全局节点，如rope_sin / cos
+    this->insert_copy_edges(this->graph_);         // 为跨设备情况添加拷贝节点
+    this->create_memory_pools(this->graph_, devices); // 创建内存池
     this->print_summary(costs, devices);
+    LOG_INFO("scheduling done");
 }
 // ========== 1. 估算每层内存开销 ==========
 std::vector<GraphScheduler::LayerCost> GraphScheduler::estimate_layer_costs(const ComputeGraph& graph) const {
@@ -184,12 +186,12 @@ void GraphScheduler::print_summary(
                      a.start_layer, a.end_layer, n_layers,
                      format_bytes(a.total_bytes));
     }
-    size_t total_weight = 0, total_act = 0;
+    size_t total_weight = 0, max_act = 0;
     for (const auto& c : costs) {
         total_weight += c.weight_bytes;
-        total_act += c.activation_bytes;
+        if (c.activation_bytes > max_act) max_act = c.activation_bytes;
     }
-    std::println("  Total: {} weights, {} activations(estimate)",format_bytes(total_weight), format_bytes(total_act));
+    std::println("  Total: {} weights, {} activations(max per layer)",format_bytes(total_weight), format_bytes(max_act));
     std::println("========================================================");
 }
 
@@ -256,6 +258,7 @@ void GraphScheduler::insert_copy_edges(ComputeGraph& graph) const {
 
 // 这里会再次统计需要使用的权重池、激活池使用大小
 // 然后创建权重池、激活池
+// 激活池大小：取每层激活的最大值（层间复用内存，不累加）
 void GraphScheduler::create_memory_pools(const ComputeGraph& graph,const std::vector<BackendInfo>& devices) {
     std::unordered_map<Device, size_t> dev_id_map;
     for (const auto& d : devices) {
@@ -266,14 +269,33 @@ void GraphScheduler::create_memory_pools(const ComputeGraph& graph,const std::ve
         size_t activation_bytes = 0;
     };
     std::unordered_map<Device, DeviceMemUsage> usage;
+
+    // 权重池：累加所有权重
     for (auto* t : graph.get_all_tensors()) {
         if (t->type == TensorType::TENSOR_TYPE_VIEW)
             continue;
         if (t->type == TensorType::TENSOR_TYPE_WEIGHT) {
             usage[t->device].weight_bytes += t->bytes();
-        } else {
-            usage[t->device].activation_bytes += t->bytes_at(config_.max_seq_len);
         }
+    }
+
+    // 激活池：按层统计，取最大单层激活量（层间复用，不累加）
+    std::unordered_map<int, size_t> layer_act;
+    for (auto* t : graph.get_all_tensors()) {
+        if (t->type == TensorType::TENSOR_TYPE_VIEW) continue;
+        if (t->type == TensorType::TENSOR_TYPE_WEIGHT) continue;
+        layer_act[t->layer_id] += t->bytes_at(config_.max_seq_len);
+    }
+    for (auto& [dev, u] : usage) {
+        // 找到该设备上最大单层激活量
+        size_t max_act = 0;
+        for (auto* t : graph.get_all_tensors()) {
+            if (t->type == TensorType::TENSOR_TYPE_VIEW || t->type == TensorType::TENSOR_TYPE_WEIGHT) continue;
+            if (t->device != dev) continue;
+            size_t la = layer_act[t->layer_id];
+            if (la > max_act) max_act = la;
+        }
+        u.activation_bytes = max_act;
     }
 
     for (auto& [dev, u] : usage) {

@@ -1,133 +1,282 @@
+#include <cassert>
 #include <cstdint>
 #include <immintrin.h>
+#include <stdexcept>
 #include "backend/cpu/linear.h"
 #include "utils/bfloat16.hpp"
 #include "utils/dtype_traits.hpp"
 #include "utils/float16.hpp"
 
-
-// ============ AVX2 Kernel for float (8-wide FMA) ============
-inline void linear_float_avx2(
-    float* __restrict__ out,
-    const float* __restrict__ x,
-    const float* __restrict__ w,
-    int64_t rows,
-    int64_t common,
-    int64_t cols,
-    const float* __restrict__ bias
-) {
-    constexpr int64_t BM = 4;   // M维度块大小
-    constexpr int64_t BN = 8;   // N维度块大小 (AVX2: 8 floats)
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int64_t m0 = 0; m0 < rows; m0 += BM) {
-        for (int64_t n0 = 0; n0 < cols; n0 += BN) {
-            // 寄存器累加器 [BM][BN/8]
-            __m256 acc[BM];
-            for (int64_t i = 0; i < BM; ++i) acc[i] = _mm256_setzero_ps();
-            // K维度主循环
-            for (int64_t k = 0; k < common; ++k) {
-                // 预取下一轮w数据（可选，视数据大小启用）
-                // _mm_prefetch(&w[(k+1)*cols + n0], _MM_HINT_T0);
-                for (int64_t i = 0; i < BM; ++i) {
-                    int64_t m = m0 + i;
-                    if (m >= rows) continue;
-                    // 广播 x[m,k]
-                    __m256 x_val = _mm256_broadcast_ss(&x[m * common + k]);
-                    // 加载 w[k, n0:n0+BN]
-                    if (n0 + BN <= cols) {
-                        __m256 w_vec = _mm256_loadu_ps(&w[k * cols + n0]);
-                        acc[i] = _mm256_fmadd_ps(x_val, w_vec, acc[i]);
-                    }
-                }
-            }
-            // 写回结果 + bias
-            for (int64_t i = 0; i < BM; ++i) {
-                int64_t m = m0 + i;
-                if (m >= rows) continue;
-                int64_t n_limit = std::min(n0 + BN, cols);
-                float tmp[8];
-                _mm256_storeu_ps(tmp, acc[i]);  // 提取标量
-                for (int64_t n = n0; n < n_limit; ++n) {
-                    float sum = tmp[n - n0];
-                    if (bias) sum += bias[n];
-                    out[m * cols + n] = sum;
-                }
-            }
-        }
-    }
+// ---------- 辅助工具函数 ----------
+// 将两个连续的 128-bit (8×fp16) 转换为两个 256-bit (8×fp32)
+inline void load_fp16_x2(__m256& lo, __m256& hi, const float16_t* addr) {
+    __m128i half_lo = _mm_loadu_si128((const __m128i*)(addr));
+    __m128i half_hi = _mm_loadu_si128((const __m128i*)(addr + 8));
+    lo = _mm256_cvtph_ps(half_lo);
+    hi = _mm256_cvtph_ps(half_hi);
+}
+// 单次加载 8 个 fp16 转为 8 个 fp32
+inline __m256 load_fp16(const float16_t* addr) {
+    __m128i half = _mm_loadu_si128((const __m128i*)addr);
+    return _mm256_cvtph_ps(half);
+}
+// 8×fp32 水平求和
+inline float hsum_ps(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 sum = _mm_add_ps(lo, hi);
+    sum = _mm_hadd_ps(sum, sum);
+    sum = _mm_hadd_ps(sum, sum);
+    return _mm_cvtss_f32(sum);
+}
+// bfloat16_t 内部只有一个 uint16_t 成员，内存布局与 uint16_t 兼容
+static inline __m256 load_bf16x8_f32(const bfloat16_t* ptr) {
+    const uint16_t* raw = reinterpret_cast<const uint16_t*>(ptr);
+    __m128i bf16 = _mm_loadu_si128((const __m128i*)raw);
+    __m256i i32  = _mm256_cvtepu16_epi32(bf16);   // 零扩展至 32bit
+    i32 = _mm256_slli_epi32(i32, 16);              // 移至 float 的高 16 位
+    return _mm256_castsi256_ps(i32);
+}
+// 加载 16 个 bf16 → 两个 8×float 向量（双累加器）
+static inline void load_bf16_x2(__m256 &lo, __m256 &hi, const bfloat16_t* ptr) {
+    lo = load_bf16x8_f32(ptr);
+    hi = load_bf16x8_f32(ptr + 8);
 }
 
-// ============ 通用入口（支持 float/float16/bfloat16） ============
-template <typename T> 
-requires std::is_same_v<T, bfloat16_t> || std::is_same_v<T, float16_t> || std::is_same_v<T, float>
+template <typename T>
 void linear(
-    T* __restrict__ out,
-    const T* __restrict__ x,
-    const T* __restrict__ w,
+    bfloat16_t* __restrict__ out,
+    const bfloat16_t* __restrict__ x,    // [rows, common], row-major
+    const bfloat16_t* __restrict__ w,    // [cols, common], row-major
     int64_t rows,
     int64_t common,
     int64_t cols,
-    const T* __restrict__ bias
+    const bfloat16_t* __restrict__ bias  // [cols]
 ) {
-    if constexpr (std::is_same_v<T, float>) {
-        // 小矩阵或无法向量化时降级
-        if (rows < 4 || cols < 8) {
-            goto fallback;
-        }
-        linear_float_avx2(out, x, w, rows, common, cols, bias);
-        return;
-    }
-    
-fallback:
-    // Half精度 / 小矩阵：分块 + OpenMP + float累加
-    constexpr int64_t BM = 32, BN = 32;
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int64_t m0 = 0; m0 < rows; m0 += BM) {
-        for (int64_t n0 = 0; n0 < cols; n0 += BN) {
-            int64_t m_end = std::min(m0 + BM, rows);
-            int64_t n_end = std::min(n0 + BN, cols);
-            
-            for (int64_t m = m0; m < m_end; ++m) {
-                for (int64_t n = n0; n < n_end; ++n) {
-                    float sum = 0.0f;
-                    // K循环在最内层，配合编译器向量化
-                    for (int64_t k = 0; k < common; ++k) {
-                        sum += static_cast<float>(x[m * common + k]) * 
-                               static_cast<float>(w[k * cols + n]);
+    constexpr int64_t MR = 16;    // 输出行分块
+    constexpr int64_t NR = 16;    // 输出列分块（8 个 float = 256-bit）
+    constexpr int64_t KR = 256;  // K 维度缓存分块
+    #pragma omp parallel for schedule(static)
+    for (int64_t i0 = 0; i0 < rows; i0 += MR) {
+        int64_t i1 = std::min(i0 + MR, rows);
+        int64_t mr = i1 - i0;
+        for (int64_t j0 = 0; j0 < cols; j0 += NR) {
+            int64_t j1 = std::min(j0 + NR, cols);
+            int64_t nr = j1 - j0;
+            // FP32 累加器 [MR][NR]，初始 0
+            alignas(32) float accum[MR][NR] = {0.0f};
+            // K 分块循环
+            for (int64_t k0 = 0; k0 < common; k0 += KR) {
+                int64_t k1 = std::min(k0 + KR, common);
+                int64_t k_len = k1 - k0;
+                // 当前 K 块内，逐行逐列做向量化点积
+                for (int64_t r = 0; r < mr; ++r) {
+                    const bfloat16_t* x_ptr = x + (i0 + r) * common + k0;
+                    for (int64_t c = 0; c < nr; ++c) {
+                        const bfloat16_t* w_ptr = w + (j0 + c) * common + k0;
+                        float local_sum = accum[r][c];
+                        int64_t k = 0;
+                        // 双累加器：一次处理 16 个 bf16
+                        if (k_len >= 16) {
+                            __m256 sum0 = _mm256_setzero_ps();
+                            __m256 sum1 = _mm256_setzero_ps();
+                            for (; k + 16 <= k_len; k += 16) {
+                                __m256 x0, x1, w0, w1;
+                                load_bf16_x2(x0, x1, x_ptr + k);
+                                load_bf16_x2(w0, w1, w_ptr + k);
+                                sum0 = _mm256_fmadd_ps(x0, w0, sum0);
+                                sum1 = _mm256_fmadd_ps(x1, w1, sum1);
+                            }
+                            sum0 = _mm256_add_ps(sum0, sum1);
+                            local_sum += hsum_ps(sum0);
+                        }
+                        // 单累加器：处理剩余 8 的倍数
+                        for (; k + 8 <= k_len; k += 8) {
+                            __m256 x_vec = load_bf16x8_f32(x_ptr + k);
+                            __m256 w_vec = load_bf16x8_f32(w_ptr + k);
+                            __m256 sum   = _mm256_fmadd_ps(x_vec, w_vec, _mm256_setzero_ps());
+                            local_sum += hsum_ps(sum);
+                        }
+                        // 标量尾部（<8 元素）
+                        for (; k < k_len; ++k) {
+                            // 利用你重载的 float() 进行隐式转换
+                            local_sum += float(x_ptr[k]) * float(w_ptr[k]);
+                        }
+                        accum[r][c] = local_sum;
                     }
-                    if (bias) sum += static_cast<float>(bias[n]);
-                    out[m * cols + n] = static_cast<T>(sum);
+                }
+            }
+            // 添加 bias 并写回 bfloat16
+            for (int64_t r = 0; r < mr; ++r) {
+                for (int64_t c = 0; c < nr; ++c) {
+                    float val = accum[r][c];
+                    if (bias) {
+                        val += float(bias[j0 + c]);   // 列广播
+                    }
+                    // 使用你提供的 RNE 舍入构造 bfloat16_t
+                    out[(i0 + r) * cols + (j0 + c)] = bfloat16_t(val);
                 }
             }
         }
     }
 }
-template <typename T> requires std::is_same_v<T, bfloat16_t> || std::is_same_v<T, float> || std::is_same_v<T, float16_t>
-void linear_T(
-    T* out,
-    const T* x,
-    const T* w,
+
+template <typename T>
+void linear(
+    float16_t* __restrict__ out,
+    const float16_t* __restrict__ x,    // [rows, common], row-major
+    const float16_t* __restrict__ w,    // [cols, common], row-major
     int64_t rows,
     int64_t common,
     int64_t cols,
-    const T* bias
-){
-    // out [rows, cols] = x [rows, common] @ w^T [cols, common] + bias
-    for (int64_t m = 0; m < rows; ++m) {
-        for (int64_t j = 0; j < cols; ++j) {
-            float sum = 0.0f;
-            for (int64_t k = 0; k < common; ++k) {
-                sum += static_cast<float>(x[m * common + k]) * static_cast<float>(w[j * common + k]);
+    const float16_t* __restrict__ bias  // [cols]
+) {
+    constexpr int64_t MR = 8;    // 输出行分块
+    constexpr int64_t NR = 8;    // 输出列分块（对应 8×fp32 寄存器宽度）
+    constexpr int64_t KR = 256;  // K 维度分块（L2 友好）
+    // 外层：遍历输出行块
+    for (int64_t i0 = 0; i0 < rows; i0 += MR) {
+        int64_t i1 = std::min(i0 + MR, rows);
+        int64_t mr = i1 - i0;   // 实际行数 (1..8)
+        // 中层：遍历输出列块
+        for (int64_t j0 = 0; j0 < cols; j0 += NR) {
+            int64_t j1 = std::min(j0 + NR, cols);
+            int64_t nr = j1 - j0;   // 实际列数 (1..8)
+            // FP32 累加器，形状 [MR][NR]，初始为 0
+            alignas(32) float accum[MR][NR] = {0.0f}; // 一块的大小
+            // 计算出accum这一小块的结果
+            for (int64_t k0 = 0; k0 < common; k0 += KR) {
+                int64_t k1 = std::min(k0 + KR, common);
+                int64_t k_len = k1 - k0;
+                // 对当前 K 块，对每一个输出行和列进行向量化点积
+                for (int64_t r = 0; r < mr; ++r) {
+                    const float16_t* x_ptr = x + (i0 + r) * common + k0;
+                    for (int64_t c = 0; c < nr; ++c) {
+                        const float16_t* w_ptr = w + (j0 + c) * common + k0;
+                        float local_sum = accum[r][c];
+                        int64_t k = 0;
+                        // 双累加器：同时处理 16 个 fp16（转换后得到 16 个 fp32）
+                        if (k_len >= 16) {
+                            __m256 sum0 = _mm256_setzero_ps();
+                            __m256 sum1 = _mm256_setzero_ps();
+                            for (; k + 16 <= k_len; k += 16) {
+                                __m256 x0, x1, w0, w1;
+                                load_fp16_x2(x0, x1, x_ptr + k);
+                                load_fp16_x2(w0, w1, w_ptr + k);
+                                sum0 = _mm256_fmadd_ps(x0, w0, sum0);
+                                sum1 = _mm256_fmadd_ps(x1, w1, sum1);
+                            }
+                            sum0 = _mm256_add_ps(sum0, sum1);
+                            local_sum += hsum_ps(sum0);
+                        }
+                        // 处理剩余 8 元素块（或 k_len < 16）
+                        for (; k + 8 <= k_len; k += 8) {
+                            __m256 x_vec = load_fp16(x_ptr + k);
+                            __m256 w_vec = load_fp16(w_ptr + k);
+                            // 单累加器 FMA
+                            __m256 sum = _mm256_setzero_ps();
+                            sum = _mm256_fmadd_ps(x_vec, w_vec, sum);
+                            local_sum += hsum_ps(sum);
+                        }
+                        // 尾部标量处理（<8 元素）
+                        for (; k < k_len; ++k) {
+                            local_sum += float(x_ptr[k]) * float(w_ptr[k]);
+                        }
+                        accum[r][c] = local_sum;
+                    }
+                }
             }
-            if (bias) sum += static_cast<float>(bias[j]);
-            out[m * cols + j] = static_cast<T>(sum);
+            // 小块算完后，直接复制到结果数组里面
+            for (int64_t r = 0; r < mr; ++r) {
+                for (int64_t c = 0; c < nr; ++c) {
+                    float val = accum[r][c];
+                    if (bias) {
+                        val += float(bias[j0 + c]);  // bias 按列广播
+                    }
+                    out[(i0 + r) * cols + (j0 + c)] = float16_t(val);
+                }
+            }
+        }
+    }
+}
+template <typename T>
+void linear(
+    float* __restrict__ out,
+    const float* __restrict__ x,    // [rows, common], row-major
+    const float* __restrict__ w,    // [cols, common], row-major
+    int64_t rows,
+    int64_t common,
+    int64_t cols,
+    const float* __restrict__ bias  // [cols]
+) {
+    constexpr int64_t MR = 8;    // 输出行分块
+    constexpr int64_t NR = 8;    // 输出列分块（8 个 float 填满 256-bit 寄存器）
+    constexpr int64_t KR = 256;  // K 维度缓存分块
+    #pragma omp parallel for schedule(static)
+    for (int64_t i0 = 0; i0 < rows; i0 += MR) {
+        int64_t i1 = std::min(i0 + MR, rows);
+        int64_t mr = i1 - i0;
+        for (int64_t j0 = 0; j0 < cols; j0 += NR) {
+            int64_t j1 = std::min(j0 + NR, cols);
+            int64_t nr = j1 - j0;
+            // FP32 累加器 [MR][NR]，初始 0
+            alignas(32) float accum[MR][NR] = {0.0f};
+            // K 分块循环
+            for (int64_t k0 = 0; k0 < common; k0 += KR) {
+                int64_t k1 = std::min(k0 + KR, common);
+                int64_t k_len = k1 - k0;
+                // 对当前 K 块，逐行逐列做向量化点积
+                for (int64_t r = 0; r < mr; ++r) {
+                    const float* x_ptr = x + (i0 + r) * common + k0;
+                    for (int64_t c = 0; c < nr; ++c) {
+                        const float* w_ptr = w + (j0 + c) * common + k0;
+                        float local_sum = accum[r][c];
+                        int64_t k = 0;
+                        // 双累加器：一次处理 16 个 float (2 × 8)
+                        if (k_len >= 16) {
+                            __m256 sum0 = _mm256_setzero_ps();
+                            __m256 sum1 = _mm256_setzero_ps();
+                            for (; k + 16 <= k_len; k += 16) {
+                                __m256 x0 = _mm256_loadu_ps(x_ptr + k);
+                                __m256 x1 = _mm256_loadu_ps(x_ptr + k + 8);
+                                __m256 w0 = _mm256_loadu_ps(w_ptr + k);
+                                __m256 w1 = _mm256_loadu_ps(w_ptr + k + 8);
+                                sum0 = _mm256_fmadd_ps(x0, w0, sum0);
+                                sum1 = _mm256_fmadd_ps(x1, w1, sum1);
+                            }
+                            sum0 = _mm256_add_ps(sum0, sum1);
+                            local_sum += hsum_ps(sum0);
+                        }
+                        // 单累加器：处理剩余 8 的倍数
+                        for (; k + 8 <= k_len; k += 8) {
+                            __m256 x_vec = _mm256_loadu_ps(x_ptr + k);
+                            __m256 w_vec = _mm256_loadu_ps(w_ptr + k);
+                            __m256 sum   = _mm256_fmadd_ps(x_vec, w_vec, _mm256_setzero_ps());
+                            local_sum += hsum_ps(sum);
+                        }
+                        // 标量尾部（<8 元素）
+                        for (; k < k_len; ++k) {
+                            local_sum += x_ptr[k] * w_ptr[k];
+                        }
+                        accum[r][c] = local_sum;
+                    }
+                }
+            }
+            // 添加 bias 并写回 float
+            for (int64_t r = 0; r < mr; ++r) {
+                for (int64_t c = 0; c < nr; ++c) {
+                    float val = accum[r][c];
+                    if (bias) {
+                        val += bias[j0 + c];   // 列广播
+                    }
+                    out[(i0 + r) * cols + (j0 + c)] = val;
+                }
+            }
         }
     }
 }
 
-// ────────────────────────────────────────────────────────────────
-//  matmul: out [M, N] = a [M, K] @ b [K, N]
-// ────────────────────────────────────────────────────────────────
+
 template <typename T> requires std::is_same_v<T, bfloat16_t> || std::is_same_v<T, float> || std::is_same_v<T, float16_t>
 void matmul(
     T* out,
@@ -147,9 +296,6 @@ void matmul(
         }
     }
 }
-// ────────────────────────────────────────────────────────────────
-//  transpose: 交换两个轴
-// ────────────────────────────────────────────────────────────────
 template <typename T> requires std::is_same_v<T, bfloat16_t> || std::is_same_v<T, float> || std::is_same_v<T, float16_t>
 void transpose(
     T* out,
@@ -179,8 +325,12 @@ namespace ops {
     void LinearImpl<Device::CPU>::execute(Tensor* out) {
         const Tensor* x    = out->src[0]; // bf16
         const Tensor* w    = out->src[1]; // bf16
-        const Tensor* bias = out->src[2];
+        const Tensor* bias = out->src[2]; // ...
         bool transpose_w = out->op_params[0] == 1;
+
+        int64_t batch = x->dims[0];
+
+        assert(batch == 1);
 
         dtype::dispatch(w->dtype, [&]<DataType D_w>() {
             using Tw = dtype::type_t<D_w>;
@@ -188,73 +338,15 @@ namespace ops {
             auto* xp = static_cast<const Tw*>(x->data);
             auto* wp = static_cast<const Tw*>(w->data);
             auto* bp = bias && bias->data ? static_cast<const Tw*>(bias->data) : nullptr;
-            if(transpose_w){
-                // W [out_features, in_features]
-                int64_t in_features  = w->dims[1];
-                int64_t out_features = w->dims[0];
-                int64_t rows = x->num_elements() / in_features;
-                linear_T<Tw>(op, xp, wp, rows, in_features, out_features, bp);
+            if(transpose_w){ // 尽管在数学上需要先将w进行转置，但是我们在具体实践中不要。
+                int64_t rows    = x->dims[1];
+                int64_t common  = w->dims[1];
+                int64_t cols    = w->dims[0];
+                linear<Tw>(op, xp, wp, rows, common, cols, bp);
             }else{
-                // W [in_features, out_features]
-                int64_t in_features  = w->dims[0];
-                int64_t out_features = w->dims[1];
-                int64_t rows = x->num_elements() / in_features;
-                linear<Tw>(op, xp, wp, rows, in_features, out_features, bp);
+                throw std::runtime_error("Linear transpose = false not impl");
             }
         });
-        // const Tensor* x    = out->src[0];
-        // const Tensor* w    = out->src[1];
-        // const Tensor* bias = out->src[2];
-        // bool transpose_w = out->op_params[0] == 1;
-        // int64_t in_features, out_features, w_ld;
-        // if (transpose_w) {
-        //     // W 存储为 [out_features, in_features]
-        //     out_features = w->dims[0];
-        //     in_features  = w->dims[1];
-        // } else {
-        //     // W 存储为 [in_features, out_features]
-        //     in_features  = w->dims[0];
-        //     out_features = w->dims[1];
-        // }
-        // w_ld = w->dims[1]; // 列宽（每行元素数）
-        // size_t M = x->num_elements() / static_cast<size_t>(in_features);
-        // size_t x_sz = data_type_size(x->dtype);
-        // size_t o_sz = data_type_size(out->dtype);
-        // auto* xp = static_cast<const uint8_t*>(x->data);
-        // auto* op = static_cast<uint8_t*>(out->data);
-        // const uint8_t* bp    = nullptr;
-        // size_t         b_sz  = 0;
-        // if (bias && bias->data) {
-        //     bp   = static_cast<const uint8_t*>(bias->data);
-        //     b_sz = data_type_size(bias->dtype);
-        // }
-        // dtype::dispatch(w->dtype, [&]<DataType D_w>() {
-        //     using Tw = dtype::type_t<D_w>;
-        //     const Tw* wp = static_cast<const Tw*>(w->data);
-        //     std::vector<float> x_row(static_cast<size_t>(in_features));
-        //     for (size_t m = 0; m < M; ++m) {
-        //         // 1. 当前行 input 转为 float（每行只做一次）
-        //         for (int64_t k = 0; k < in_features; ++k) {
-        //             x_row[static_cast<size_t>(k)] = dtype::to_f32_rt(
-        //                 x->dtype, xp + (m * in_features + k) * x_sz);
-        //         }
-        //         // 2. x_row @ W[:, j] + bias
-        //         for (int64_t j = 0; j < out_features; ++j) {
-        //             float sum = 0.0f;
-        //             for (int64_t k = 0; k < in_features; ++k) {
-        //                 float w_val = transpose_w
-        //                     ? dtype::to_f32<D_w>(wp[j * w_ld + k])
-        //                     : dtype::to_f32<D_w>(wp[k * w_ld + j]);
-        //                 sum += x_row[static_cast<size_t>(k)] * w_val;
-        //             }
-        //             if (bp) {
-        //                 sum += dtype::to_f32_rt(bias->dtype, bp + j * b_sz);
-        //             }
-        //             dtype::from_f32_rt(out->dtype, sum,
-        //                 op + (m * out_features + j) * o_sz);
-        //         }
-        //     }
-        // });
     }
 
     void MatmulImpl<Device::CPU>::execute(Tensor* out) {

@@ -50,14 +50,15 @@ public:
         return t;
     }
     // ──────────────────────────────────────────────────────────────────
-    // linear: y = x @ weight
+    // linear: y = x @ weight.T + bias
     // ──────────────────────────────────────────────────────────────────
     static Tensor* linear(
         Tensor* input, 
         const TensorInfo* weight_info,
         const std::string& name = "",
         int32_t layer_id = -1,
-        bool transpose = false
+        bool transpose = false,
+        Tensor* bias = nullptr
     ){
         Tensor* t = new Tensor();
         t->name = name;
@@ -65,15 +66,19 @@ public:
         t->type = TensorType::TENSOR_TYPE_ACTIVATION;
         t->dtype = input->dtype;
         t->op_type = OperationType::OP_TYPE_LINEAR;
+
         auto out_dims = infer_linear_output(
             {input->dims.begin(), input->dims.end()},  // 传整个数组
             weight_info->dimensions,
-            transpose  // 不转置，weight shape: [in_features, out_features]
+            transpose 
         );
         std::copy(out_dims.begin(), out_dims.end(), t->dims.begin());
+
         t->src[0] = input;
         t->src[1] = OpFactory::weight_placeholder(weight_info, weight_info->name,layer_id);
-        t->op_params[0] = transpose ? 1 : 0;  // 转置标志
+        t->src[2] = bias;
+
+        t->op_params[0] = transpose ? 1 : 0;  // 转置标志,虽说标记了转置，但是这是数学上的。具体实现的时候不转置反而好。
         
         OpFactory::compute_strides(t);
         return t;

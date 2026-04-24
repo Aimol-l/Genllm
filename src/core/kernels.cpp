@@ -1,4 +1,5 @@
 #include "core/kernels.h"
+#include "utils.hpp"
 #include "utils/dtype_traits.hpp"
 #include "backend/cpu/arithmetic.h"
 #include "backend/cpu/normalization.h"
@@ -8,7 +9,6 @@
 #include "backend/cpu/attention.h"
 #include "backend/cpu/embedding.h"
 #include "backend/cpu/rope.h"
-#include "backend/cpu/sampling.h"
 #ifdef BACKEND_CUDA
 #include "backend/cuda/arithmetic.h"
 #include "backend/cuda/normalization.h"
@@ -16,9 +16,7 @@
 #include "backend/cuda/shape.h"
 #include "backend/cuda/activation.h"
 #include "backend/cuda/attention.h"
-#include "backend/cuda/embedding.h"
 #include "backend/cuda/rope.h"
-#include "backend/cuda/sampling.h"
 #endif
 
 namespace kernel {
@@ -28,7 +26,6 @@ namespace kernel {
     void sub(Tensor* t)       { device::dispatchOp(t->device, [&]<Device D>() { ops::SubImpl<D>::execute(t); }); }
     void mul(Tensor* t)       { device::dispatchOp(t->device, [&]<Device D>() { ops::MulImpl<D>::execute(t); }); }
     void div(Tensor* t)       { device::dispatchOp(t->device, [&]<Device D>() { ops::DivImpl<D>::execute(t); }); }
-    void scale(Tensor* t)     { device::dispatchOp(t->device, [&]<Device D>() { ops::ScaleImpl<D>::execute(t); }); }
 
     // ===== normalization =====
     void rms_norm(Tensor* t)  { device::dispatchOp(t->device, [&]<Device D>() { ops::RmsNormImpl<D>::execute(t); }); }
@@ -56,15 +53,17 @@ namespace kernel {
     void flash_attention(Tensor* t){ device::dispatchOp(t->device, [&]<Device D>() { ops::FlashAttentionImpl<D>::execute(t); }); }
 
     // ===== embedding =====
-    void embedding(Tensor* t)      { device::dispatchOp(t->device, [&]<Device D>() { ops::EmbeddingImpl<D>::execute(t); }); }
+    void embedding(Tensor* t){
+        ops::EmbeddingImpl<Device::CPU>::execute(t);
+    }
 
     // ===== rope =====
     void apply_rope(Tensor* t)     { device::dispatchOp(t->device, [&]<Device D>() { ops::ApplyRopeImpl<D>::execute(t); }); }
-    void rope_cache(Tensor* t)     { device::dispatchOp(t->device, [&]<Device D>() { ops::RopeCacheImpl<D>::execute(t); }); }
+    void rope_cache(Tensor* t){
+        ops::RopeCacheImpl<Device::CPU>::execute(t);
+    }
 
     // ===== misc =====
     void concat(Tensor* t)         { device::dispatchOp(t->device, [&]<Device D>() { ops::ConcatImpl<D>::execute(t); }); }
     void repeat(Tensor* t)         { device::dispatchOp(t->device, [&]<Device D>() { ops::RepeatImpl<D>::execute(t); }); }
-    void sampling(Tensor* t)       { device::dispatchOp(t->device, [&]<Device D>() { ops::SamplingImpl<D>::execute(t); }); }
-
 } // namespace kernel

@@ -8,14 +8,12 @@
     #define OPS_API // Linux or macOS
 #endif
 
-
 namespace kernel {
 
     OPS_API void add(Tensor* out);
     OPS_API void sub(Tensor* out);
     OPS_API void mul(Tensor* out);
     OPS_API void div(Tensor* out);
-    OPS_API void scale(Tensor* out);
     OPS_API void rms_norm(Tensor* out);
     OPS_API void layer_norm(Tensor* out);
     OPS_API void matmul(Tensor* out);
@@ -36,6 +34,4 @@ namespace kernel {
     OPS_API void concat(Tensor* out);
     OPS_API void repeat(Tensor* out);
     OPS_API void rope_cache(Tensor* out);
-    OPS_API void sampling(Tensor* out);
-
 } // namespace kernel

@@ -1,5 +1,6 @@
 #include "model/Qwen3.hpp"
 #include "model/op_factory.hpp"
+#include "utils/tools.hpp"
 
 
 void Qwen3Model::print_info(){
@@ -48,108 +49,11 @@ void Qwen3Model::parse_config(const GGUFInfo& info) {
         config_.head_dim, config_.vocab_size, config_.num_layers);
 }
 
-Tensor* Qwen3Model::build_qwen3_layer(
-    Tensor* input,           // [batch, seq_len, hidden_size]
-    const GGUFInfo& info,
-    int layer_idx,
-    int hidden_size,
-    int num_heads,
-    int num_kv_heads,
-    int head_dim,
-    int intermediate_size,
-    float rms_norm_eps,
-    Tensor* rope_cos,
-    Tensor* rope_sin 
-) {
-    std::string prefix = std::format("blk.{}", layer_idx);
-    // ──────────────────────────────────────────────────
-    // [1] Self-Attention 分支
-    // ──────────────────────────────────────────────────
-    // 1.1 RMSNorm: input_layernorm
-    const TensorInfo* attn_norm_info = OpFactory::find_tensor(info, prefix + ".attn_norm.weight"); // [hidden_size]
-    // [batch, seq_len, hidden_size],[hidden_size] -> [batch, seq_len, hidden_size ]
-    Tensor* x_norm = OpFactory::rms_norm(input, attn_norm_info, rms_norm_eps, "x_norm",layer_idx); // [batch, seq_len, hidden_size]
-    
-    // 1.2 Q/K/V 投影
-    const TensorInfo* q_weight = OpFactory::find_tensor(info, prefix + ".attn_q.weight"); // [2048, hidden_size]
-    const TensorInfo* k_weight = OpFactory::find_tensor(info, prefix + ".attn_k.weight"); // [1024, hidden_size]
-    const TensorInfo* v_weight = OpFactory::find_tensor(info, prefix + ".attn_v.weight"); // [1024, hidden_size]
-
-    // [batch, seq_len, hidden_size] @ [2048, hidden_size].T -> [batch, seq_len, 2048]
-    Tensor* q_flat = OpFactory::linear(x_norm, q_weight, "q_flat",layer_idx,!info.pre_transpose);
-    // [batch, seq_len, hidden_size] @ [1024, hidden_size].T -> [batch, seq_len, 1024]
-    Tensor* k_flat = OpFactory::linear(x_norm, k_weight, "k_flat",layer_idx,!info.pre_transpose);
-    // [batch, seq_len, hidden_size] @ [1024, hidden_size].T -> [batch, seq_len, 1024]
-    Tensor* v_flat = OpFactory::linear(x_norm, v_weight, "v_flat",layer_idx,!info.pre_transpose);
-    
-    // 1.3 
-    // [batch, seq_len, 2048] -> [batch, seq_len, num_heads, head_dim] -> [batch, num_heads, seq_len, head_dim]
-    Tensor* q_4d = OpFactory::reshape_permute(q_flat, {1, -1, num_heads,    head_dim}, {0, 2, 1, 3}, "q_4d",layer_idx);
-    // [batch, seq_len, 1024] -> [batch, seq_len, num_kv_heads, head_dim] -> [batch, num_kv_heads, seq_len, head_dim]
-    Tensor* k_4d = OpFactory::reshape_permute(k_flat, {1, -1, num_kv_heads, head_dim}, {0, 2, 1, 3}, "k_4d",layer_idx);
-    // [batch, seq_len, 1024] -> [batch, seq_len, num_kv_heads, head_dim] -> [batch, num_kv_heads, seq_len, head_dim]
-    Tensor* v_4d = OpFactory::reshape_permute(v_flat, {1, -1, num_kv_heads, head_dim}, {0, 2, 1, 3}, "v_4d",layer_idx);
-    
-    // 1.4 Per-head RMSNorm (只对 head_dim 归一化)
-    const TensorInfo* q_norm_info = OpFactory::find_tensor(info, prefix + ".attn_q_norm.weight"); // [128]
-    const TensorInfo* k_norm_info = OpFactory::find_tensor(info, prefix + ".attn_k_norm.weight"); // [128]
-    
-    // [B, n, S, head_dim]
-    Tensor* q_normed = OpFactory::rms_norm(q_4d, q_norm_info, rms_norm_eps, "q_normed",layer_idx); // [batch, num_heads, seq_len, head_dim]
-    Tensor* k_normed = OpFactory::rms_norm(k_4d, k_norm_info, rms_norm_eps, "k_normed",layer_idx); // [batch, num_kv_heads, seq_len, head_dim]
-
-    // 1.5 Apply RoPE, [B, num_heads, seq_len, head_dim], [B, num_kv_heads, seq_len, head_dim]
-    auto [q_rope, k_rope] = OpFactory::apply_rope(q_normed, k_normed, rope_cos, rope_sin,nullptr,"",layer_idx); 
-    
-    // 1.6 SDPA / FlashAttention
-    //  [B, num_heads, seq_len, head_dim]
-    Tensor* attn_4d = OpFactory::SDPA(q_rope, k_rope, v_4d,nullptr,1.0f/(std::sqrt(float(head_dim))),true,16 / 8,"attn_4d",layer_idx);
-    
-    // 1.7 [B, num_heads, seq_len, head_dim] -> [B, seq_len, num_heads, head_dim] -> [B, seq_len, num_heads*head_dim]
-    Tensor* attn_flat = OpFactory::permute_reshape(attn_4d,{0, 2, 1, 3},{1,-1,num_heads * head_dim},"attn_flat",layer_idx);
-    
-    const TensorInfo* attn_out_weight = OpFactory::find_tensor(info, prefix + ".attn_output.weight");   // [hidden_size, 2048]
-
-    // [B, seq_len, num_heads * head_dim]@ [hidden_size, 2048].T -> [B, seq_len, hidden_size]
-    Tensor* attn_out = OpFactory::linear(attn_flat, attn_out_weight, "attn_out",layer_idx,!info.pre_transpose);
-    
-    // 1.8 残差连接
-    Tensor* ffn_input = OpFactory::add(attn_out, input, "ffn_input",layer_idx); // [B,seq_len, hidden_size]
-    // ──────────────────────────────────────────────────
-    // [2] SwiGLU FFN 分支
-    // ──────────────────────────────────────────────────
-    // 2.1 RMSNorm: post_attention_layernorm
-    const TensorInfo* ffn_norm_info = OpFactory::find_tensor(info, prefix + ".ffn_norm.weight"); // [hidden_size]
-    Tensor* ffn_normed = OpFactory::rms_norm(ffn_input, ffn_norm_info, rms_norm_eps, "ffn_normed",layer_idx); // [B, seq_len, hidden_size]
-
-    // 2.2 SwiGLU: gate + up (并行)
-    const TensorInfo* gate_weight = OpFactory::find_tensor(info, prefix + ".ffn_gate.weight");  // [3072, hidden_size]
-    const TensorInfo* up_weight = OpFactory::find_tensor(info, prefix + ".ffn_up.weight");      // [3072, hidden_size]
-
-    // [B, seq_len, hidden_size] @ [3072, hidden_size].T -> [B, seq_len, 3072]
-    Tensor* gate = OpFactory::linear(ffn_normed, gate_weight, "gate",layer_idx,!info.pre_transpose);
-    // [B, seq_len, hidden_size] @ [3072, hidden_size].T -> [B, seq_len, 3072]
-    Tensor* up = OpFactory::linear(ffn_normed, up_weight, "up",layer_idx,!info.pre_transpose);
-    
-    // 2.3 SiLU(gate) * up
-    Tensor* gate_act = OpFactory::silu(gate, "gate_act",layer_idx);// [B, seq_len, 3072]
-    Tensor* ffn_inter = OpFactory::mul(gate_act, up, "ffn_inter",layer_idx); // [B, seq_len, 3072] * [B, seq_len, 3072] -> [B, seq_len, 3072]
-
-    // 2.4 Down projection + 残差
-    const TensorInfo* down_weight = OpFactory::find_tensor(info, prefix + ".ffn_down.weight");  // [hidden_size, 3072]
-
-    // 2.5 [B, seq_len, 3072] @ [hidden_size, 3072].T -> [B, seq_len, hidden_size]
-    Tensor* ffn_out = OpFactory::linear(ffn_inter, down_weight, "ffn_out",layer_idx,!info.pre_transpose);
-    Tensor* layer_output = OpFactory::add(ffn_out, ffn_input, "layer_output",layer_idx); // [B, seq_len, hidden_size]
-
-    return layer_output;
-}
-
 ComputeGraph& Qwen3Model::build_graph(const GGUFInfo& info){
     std::println("Building Qwen3 computation graph...");
     // ========== Step 1: 解析配置参数 ==========
     this->parse_config(info);
-    this->config_.num_layers = 1; // 临时 hardcode 层数，方便测试。实际实现时应该使用 config_.num_layers
+    // this->config_.num_layers = 1; // 临时 hardcode 层数，方便测试。实际实现时应该使用 config_.num_layers
     //=====================================================================================
     Tensor* input_ids = OpFactory::placeholder(DataType::GGML_TYPE_I32,TensorType::TENSOR_TYPE_INPUT, {1, -1},"input_ids"); //[B, seq_len]
 
@@ -185,7 +89,7 @@ ComputeGraph& Qwen3Model::build_graph(const GGUFInfo& info){
     const TensorInfo* output_norm_info = OpFactory::find_tensor(info, "output_norm.weight"); // [hidden_size]
     Tensor* final_norm = OpFactory::rms_norm(prev_output,output_norm_info,config_.rms_norm_eps,"final_norm",config_.num_layers); // [B, seq_len, hidden_size]
 
-    // LM Head: [B, seq_len, hidden_size] @ [vocab_size, hidden_size].T -> [B, seq_len, vocab_size]
+    // LM Head: [B, seq_len, hidden_size] @ [vocab_size, hidden_size] -> [B, seq_len, vocab_size]
     Tensor* logits = OpFactory::linear(final_norm,embd_weight_info,"logits",config_.num_layers,!info.pre_transpose);
     
     logits->type = TensorType::TENSOR_TYPE_OUTPUT; // 标记为输出张量
@@ -194,4 +98,101 @@ ComputeGraph& Qwen3Model::build_graph(const GGUFInfo& info){
     this->graph_.build_from_outputs({logits});
 
     return this->graph_;
+}
+
+Tensor* Qwen3Model::build_qwen3_layer(
+    Tensor* input,           // [batch, seq_len, hidden_size]
+    const GGUFInfo& info,
+    int layer_idx,
+    int hidden_size,
+    int num_heads,
+    int num_kv_heads,
+    int head_dim,
+    int intermediate_size,
+    float rms_norm_eps,
+    Tensor* rope_cos,
+    Tensor* rope_sin 
+) {
+    std::string prefix = std::format("blk.{}", layer_idx);
+    // ──────────────────────────────────────────────────
+    // [1] Self-Attention 分支
+    // ──────────────────────────────────────────────────
+    // 1.1 RMSNorm: input_layernorm
+    const TensorInfo* attn_norm_info = OpFactory::find_tensor(info, prefix + ".attn_norm.weight"); // [hidden_size]
+    // [batch, seq_len, hidden_size],[hidden_size] -> [batch, seq_len, hidden_size ]
+    Tensor* x_norm = OpFactory::rms_norm(input, attn_norm_info, rms_norm_eps, "x_norm",layer_idx); // [batch, seq_len, hidden_size]
+    
+    // 1.2 Q/K/V 投影
+    const TensorInfo* q_weight = OpFactory::find_tensor(info, prefix + ".attn_q.weight"); // [2048, hidden_size]
+    const TensorInfo* k_weight = OpFactory::find_tensor(info, prefix + ".attn_k.weight"); // [1024, hidden_size]
+    const TensorInfo* v_weight = OpFactory::find_tensor(info, prefix + ".attn_v.weight"); // [1024, hidden_size]
+
+    // [batch, seq_len, hidden_size] @ [2048, hidden_size] -> [batch, seq_len, 2048], 这种张量排列更有利于计算的时候缓存命中
+    Tensor* q_flat = OpFactory::linear(x_norm, q_weight, "q_flat",layer_idx,!info.pre_transpose);
+    // [batch, seq_len, hidden_size] @ [1024, hidden_size] -> [batch, seq_len, 1024]
+    Tensor* k_flat = OpFactory::linear(x_norm, k_weight, "k_flat",layer_idx,!info.pre_transpose);
+    // [batch, seq_len, hidden_size] @ [1024, hidden_size] -> [batch, seq_len, 1024]
+    Tensor* v_flat = OpFactory::linear(x_norm, v_weight, "v_flat",layer_idx,!info.pre_transpose);
+    
+    // 1.3 
+    // [batch, seq_len, 2048] -> [batch, seq_len, num_heads, head_dim] -> [batch, num_heads, seq_len, head_dim]
+    Tensor* q_4d = OpFactory::reshape_permute(q_flat, {1, -1, num_heads,    head_dim}, {0, 2, 1, 3}, "q_4d",layer_idx);
+    // [batch, seq_len, 1024] -> [batch, seq_len, num_kv_heads, head_dim] -> [batch, num_kv_heads, seq_len, head_dim]
+    Tensor* k_4d = OpFactory::reshape_permute(k_flat, {1, -1, num_kv_heads, head_dim}, {0, 2, 1, 3}, "k_4d",layer_idx);
+    // [batch, seq_len, 1024] -> [batch, seq_len, num_kv_heads, head_dim] -> [batch, num_kv_heads, seq_len, head_dim]
+    Tensor* v_4d = OpFactory::reshape_permute(v_flat, {1, -1, num_kv_heads, head_dim}, {0, 2, 1, 3}, "v_4d",layer_idx);
+    
+    // 1.4 Per-head RMSNorm (只对 head_dim 归一化)
+    const TensorInfo* q_norm_info = OpFactory::find_tensor(info, prefix + ".attn_q_norm.weight"); // [128]
+    const TensorInfo* k_norm_info = OpFactory::find_tensor(info, prefix + ".attn_k_norm.weight"); // [128]
+    
+    // [B, n, S, head_dim]
+    Tensor* q_normed = OpFactory::rms_norm(q_4d, q_norm_info, rms_norm_eps, "q_normed",layer_idx); // [batch, num_heads, seq_len, head_dim]
+    Tensor* k_normed = OpFactory::rms_norm(k_4d, k_norm_info, rms_norm_eps, "k_normed",layer_idx); // [batch, num_kv_heads, seq_len, head_dim]
+
+    // 1.5 Apply RoPE, [B, num_heads, seq_len, head_dim], [B, num_kv_heads, seq_len, head_dim]
+    auto [q_rope, k_rope] = OpFactory::apply_rope(q_normed, k_normed, rope_cos, rope_sin,nullptr,"",layer_idx); 
+    
+    // 1.6 SDPA / FlashAttention
+    //  [B, num_heads, seq_len, head_dim]
+    Tensor* attn_4d = OpFactory::SDPA(q_rope, k_rope, v_4d,nullptr,1.0f/(std::sqrt(float(head_dim))),true,16 / 8,"attn_4d",layer_idx);
+    
+    // 1.7 [B, num_heads, seq_len, head_dim] -> [B, seq_len, num_heads, head_dim] -> [B, seq_len, num_heads*head_dim]
+    Tensor* attn_flat = OpFactory::permute_reshape(attn_4d,{0, 2, 1, 3},{1,-1,num_heads * head_dim},"attn_flat",layer_idx);
+    
+    const TensorInfo* attn_out_weight = OpFactory::find_tensor(info, prefix + ".attn_output.weight");   // [hidden_size, 2048]
+
+    // [B, seq_len, num_heads * head_dim]@ [hidden_size, 2048] -> [B, seq_len, hidden_size]
+    Tensor* attn_out = OpFactory::linear(attn_flat, attn_out_weight, "attn_out",layer_idx,!info.pre_transpose);
+    
+    // 1.8 残差连接
+    Tensor* ffn_input = OpFactory::add(attn_out, input, "ffn_input",layer_idx); // [B,seq_len, hidden_size]
+    // ──────────────────────────────────────────────────
+    // [2] SwiGLU FFN 分支
+    // ──────────────────────────────────────────────────
+    // 2.1 RMSNorm: post_attention_layernorm
+    const TensorInfo* ffn_norm_info = OpFactory::find_tensor(info, prefix + ".ffn_norm.weight"); // [hidden_size]
+    Tensor* ffn_normed = OpFactory::rms_norm(ffn_input, ffn_norm_info, rms_norm_eps, "ffn_normed",layer_idx); // [B, seq_len, hidden_size]
+
+    // 2.2 SwiGLU: gate + up (并行)
+    const TensorInfo* gate_weight = OpFactory::find_tensor(info, prefix + ".ffn_gate.weight");  // [3072, hidden_size]
+    const TensorInfo* up_weight = OpFactory::find_tensor(info, prefix + ".ffn_up.weight");      // [3072, hidden_size]
+
+    // [B, seq_len, hidden_size] @ [3072, hidden_size] -> [B, seq_len, 3072]
+    Tensor* gate = OpFactory::linear(ffn_normed, gate_weight, "gate",layer_idx,!info.pre_transpose);
+    // [B, seq_len, hidden_size] @ [3072, hidden_size] -> [B, seq_len, 3072]
+    Tensor* up = OpFactory::linear(ffn_normed, up_weight, "up",layer_idx,!info.pre_transpose);
+    
+    // 2.3 SiLU(gate) * up
+    Tensor* gate_act = OpFactory::silu(gate, "gate_act",layer_idx);// [B, seq_len, 3072]
+    Tensor* ffn_inter = OpFactory::mul(gate_act, up, "ffn_inter",layer_idx); // [B, seq_len, 3072] * [B, seq_len, 3072] -> [B, seq_len, 3072]
+
+    // 2.4 Down projection + 残差
+    const TensorInfo* down_weight = OpFactory::find_tensor(info, prefix + ".ffn_down.weight");  // [hidden_size, 3072]
+
+    // 2.5 [B, seq_len, 3072] @ [hidden_size, 3072] -> [B, seq_len, hidden_size]
+    Tensor* ffn_out = OpFactory::linear(ffn_inter, down_weight, "ffn_out",layer_idx,!info.pre_transpose);
+    Tensor* layer_output = OpFactory::add(ffn_out, ffn_input, "layer_output",layer_idx); // [B, seq_len, hidden_size]
+
+    return layer_output;
 }

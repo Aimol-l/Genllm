@@ -71,23 +71,8 @@ namespace ops {
         });
     }
 
-    void ScaleImpl<Device::CPU>::execute(Tensor* out) {
-        const Tensor* x = out->src[0];
-        float s = out->op_params[0];
-        dtype::dispatch(out->dtype, [&]<DataType D>() {
-            using T = dtype::type_t<D>;
-            const T* px = static_cast<const T*>(x->data);
-            T*       po = static_cast<T*>(out->data);
-            size_t   n  = out->num_elements();
-            for (size_t i = 0; i < n; ++i) {
-                po[i] = dtype::from_f32<D>(dtype::to_f32<D>(px[i]) * s);
-            }
-        });
-    }
-
 template struct AddImpl<Device::CPU>;
 template struct SubImpl<Device::CPU>;
 template struct MulImpl<Device::CPU>;
 template struct DivImpl<Device::CPU>;
-template struct ScaleImpl<Device::CPU>;
 }
