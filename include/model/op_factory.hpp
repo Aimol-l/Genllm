@@ -336,8 +336,10 @@ public:
         t->type = TensorType::TENSOR_TYPE_ACTIVATION;
         t->op_type = OperationType::OP_TYPE_PERMUTE;
         std::fill(t->dims.begin(), t->dims.end(), 0);
+        std::fill(t->op_params.begin(), t->op_params.end(), 0.0f);
         for (size_t i = 0; i < perm.size(); ++i) {
             t->dims[i] = src_dims[perm[i]];
+            t->op_params[i] = static_cast<float>(perm[i]); // save perm for kernel
         }
         t->src[0] = input;
         OpFactory::compute_strides(t);

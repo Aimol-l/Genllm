@@ -115,7 +115,9 @@ void Executor::forward() {
             // pool_->wait();
         }
         // 非最后一层时 reset，下一层复用激活池内存
-        if (i + 1 < step_layers_.size()) {
+        // 跳过 layer_id == -1 (embedding): reset 会覆盖该层的输出 x_in,
+        // 导致下一个 transformer 层的残差连接读取到被破坏的数据
+        if (i + 1 < step_layers_.size() && step_layers_[i].layer_id != -1) {
             this->reset_step_activations();
         }
     }
@@ -150,9 +152,8 @@ std::vector<int32_t> Executor::generate(
     this->prefill(prompt);
 
     for (int i = 0; i < max_tokens; ++i) {
-        int32_t next = this->sample();
-        // int32_t next = this->sample_argmax();
-        // int32_t next = this->sample_top_p(scheduler_.temperature(), scheduler_.top_p());
+        int32_t next = this->sample_argmax();
+
         if (eos_tokens == next) break;
         output.push_back(next);
         token_cache.push_back(next);

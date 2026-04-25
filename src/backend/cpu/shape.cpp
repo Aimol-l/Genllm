@@ -73,18 +73,10 @@ namespace ops {
         for (int i = 0; i < TENSOR_MAX_DIMS && x->dims[i] != 0; ++i) {
             ndim = i + 1;
         }
-        // 反推置换: out->dims[i] = x->dims[perm[i]]
+        // Read perm from op_params (stored during graph build)
         int perm[TENSOR_MAX_DIMS];
-        bool used[TENSOR_MAX_DIMS]{};
         for (int i = 0; i < ndim; ++i) {
-            perm[i] = -1;
-            for (int j = 0; j < ndim; ++j) {
-                if (!used[j] && out->dims[i] == x->dims[j]) {
-                    perm[i] = j;
-                    used[j] = true;
-                    break;
-                }
-            }
+            perm[i] = static_cast<int>(out->op_params[i]);
         }
         size_t elem_sz  = data_type_size(out->dtype);
         size_t total    = out->num_elements();
