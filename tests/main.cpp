@@ -54,19 +54,7 @@ int main() {
     std::println("========================================================");
     try {
 
-        // 手动调试: prefill + decode + 检查logits
-        executor.prefill(prompt_ids);
-        int32_t first = executor.sample_argmax();
-        std::println("First token: {}", first);
-
-        std::vector<int32_t> token_cache = prompt_ids;
-        token_cache.push_back(first);
-        executor.decode_step(token_cache);
-        int32_t second = executor.sample_argmax();
-        std::println("Second token: {}", second);
-
-        std::vector<int32_t> output = executor.generate(prompt_ids, 10, tokenizer.eos_id());
-        std::println("Generated token IDs: {}", output);
+        std::vector<int32_t> output = executor.generate(prompt_ids, 256, tokenizer.eos_id());
         std::println("Generated text: {}", tokenizer.decode(output));
 
     } catch (const std::exception& e) {

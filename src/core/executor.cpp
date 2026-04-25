@@ -160,7 +160,7 @@ std::vector<int32_t> Executor::generate(
     this->prefill(prompt);
 
     for (int i = 0; i < max_tokens; ++i) {
-        int32_t next = this->sample_argmax();
+        int32_t next = this->sample();
 
         if (eos_tokens == next) break;
         output.push_back(next);
