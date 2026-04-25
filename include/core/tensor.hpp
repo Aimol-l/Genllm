@@ -19,8 +19,8 @@ struct Tensor{
     enum OperationType op_type; // add,sub,mul,div.....
     std::array<int64_t, TENSOR_MAX_DIMS> dims = {0,0,0,0};      // 各维度大小,默认都是0
     std::array<uint64_t, TENSOR_MAX_DIMS> strides = {0,0,0,0};  // 各维度字节跨度
-    std::array<Tensor*, TENSOR_MAX_SRC> src = {};               // 源 tensor（用于计算图）
-    std::array<float, TENSOR_MAX_OP_PARAMS> op_params = {};     // 操作参数
+    std::array<Tensor*, TENSOR_MAX_SRC> src = {nullptr,nullptr,nullptr,nullptr,nullptr};               // 源 tensor（用于计算图）
+    std::array<float, TENSOR_MAX_OP_PARAMS> op_params = {0,0,0,0};     // 操作参数
     std::string name;
     // ========== 工具方法 ==========
     // 如果dims中存在-1，表示该维度大小未知，直到运行时才能确定（如batch_size）。num_elements方法会将-1视为1，因此在计算总元素数量时不会出错，但实际内存分配时需要根据运行时确定的维度大小进行调整。

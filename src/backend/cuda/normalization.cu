@@ -63,20 +63,23 @@ void RmsNormImpl<Device::CUDA>::execute(Tensor* out){
     int blocks = (rows + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK;
     dtype::dispatch(out->dtype, [&]<DataType D>() {
         using T = dtype::type_t<D>;
-        if constexpr (
-            std::is_same_v<T, __half> ||
-            std::is_same_v<T, __nv_bfloat16>
-        ){
-            rmsnorm_warp_kernel<T><<<blocks, THREADS>>>(
-                (T*)out->data,
-                (const T*)x->data,
-                (const float*)w->data,
-                rows,
-                H,
-                eps
-            );
-        } else {
-            throw std::runtime_error("RMSNorm only supports fp16/bf16");
+        if constexpr (std::is_same_v<T,float16_t>) {
+            __half*      ou = static_cast<__half*>(out->data);
+            const __half* in = static_cast<const __half*>(x->data);
+            const float* weight = static_cast<const float*>(w->data);
+            rmsnorm_warp_kernel<<<blocks, THREADS>>>(ou,in,weight,rows,H,eps);
+        }else if constexpr(std::is_same_v<T,bfloat16_t>){
+            __nv_bfloat16*      ou = static_cast<__nv_bfloat16*>(out->data);
+            const __nv_bfloat16* in = static_cast<const __nv_bfloat16*>(x->data);
+            const float* weight = static_cast<const float*>(w->data);
+            rmsnorm_warp_kernel<<<blocks, THREADS>>>(ou,in,weight,rows,H,eps);
+        }else if constexpr(std::is_same_v<T,float>){
+            float*      ou = static_cast<float*>(out->data);
+            const float* in = static_cast<const float*>(x->data);
+            const float* weight = static_cast<const float*>(w->data);
+            rmsnorm_warp_kernel<<<blocks, THREADS>>>(ou,in,weight,rows,H,eps);
+        }else{
+            throw std::runtime_error("RMSNorm only supports fp32/fp16/bf16");
         }
     });
     cudaError_t err = cudaGetLastError();

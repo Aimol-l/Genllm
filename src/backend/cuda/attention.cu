@@ -12,7 +12,6 @@ namespace ops {
 
 template <typename T>
 __global__ void softmax_kernel(const T* __restrict__ input, T* __restrict__ output, size_t outer_dim, size_t axis_dim, size_t inner_dim) { 
-    size_t glob_id = blockIdx.x * blockDim.x + threadIdx.x;
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     size_t total = outer_dim * inner_dim;
     if (idx >= total) return;
@@ -65,11 +64,11 @@ void SoftmaxImpl<Device::CUDA>::execute(Tensor* t){
 
     dtype::dispatch(t->dtype, [&]<DataType D>() {
         using T = dtype::type_t<D>;
-        if constexpr (std::is_same_v<T,__half>) {
+        if constexpr (std::is_same_v<T,float16_t>) {
             __half*      out = static_cast<__half*>(t->data);
             const __half* in1 = static_cast<const __half*>(x->data);
             softmax_kernel<<<blocks, threads>>>(in1, out, outer_dim, axis_dim, inner_dim);
-        }else if constexpr(std::is_same_v<T,__nv_bfloat16>){
+        }else if constexpr(std::is_same_v<T,bfloat16_t>){
             __nv_bfloat16* out = static_cast<__nv_bfloat16*>(t->data);
             const __nv_bfloat16* in1 = static_cast<const __nv_bfloat16*>(x->data);
             softmax_kernel<<<blocks, threads>>>(in1, out, outer_dim, axis_dim, inner_dim);
@@ -93,33 +92,26 @@ __global__ void flash_attention_warp_kernel(
     int64_t n_kv_heads, int64_t Skv,
     float scale_val, int causal, int num_kv_groups
 ) {
-    // ===== 基本索引 =====
     const int bh = blockIdx.x;
     if (bh >= B * n_heads) return;
     const int head_idx  = bh % n_heads;
     const int batch_idx = bh / n_heads;
     const int kv_head_idx = head_idx / num_kv_groups;
-    // ===== warp / lane =====
+
     const int warp_id = threadIdx.x / 32;
     const int lane_id = threadIdx.x % 32;
-    // 一个 warp 处理一个 query
-    const int q_pos = warp_id;
+    const int q_pos = warp_id + blockIdx.y * static_cast<int>(blockDim.x / 32);
     if (q_pos >= Sq) return;
-    // ===== base offset =====
+
     const int64_t q_base  = (batch_idx * n_heads + head_idx) * Sq * HEAD_DIM;
     const int64_t kv_base = (batch_idx * n_kv_heads + kv_head_idx) * Skv * HEAD_DIM;
     const int64_t out_base = q_base;
-    // ===== shared memory (K/V tile) =====
-    extern __shared__ T smem[];
-    T* shared_K = smem;
-    T* shared_V = smem + Skv * HEAD_DIM;
-    // ===== load KV to shared =====
-    for (int i = threadIdx.x; i < Skv * HEAD_DIM; i += blockDim.x) {
-        shared_K[i] = K[kv_base + i];
-        shared_V[i] = V[kv_base + i];
-    }
-    __syncthreads();
-    // ===== 每个 lane 处理 HEAD_DIM / 32 元素 =====
+
+    constexpr int KV_TILE = 32;
+    extern __shared__ char smem_[];
+    T* shared_K = reinterpret_cast<T*>(smem_);
+    T* shared_V = reinterpret_cast<T*>(smem_ + KV_TILE * HEAD_DIM * sizeof(T));
+
     constexpr int VEC = HEAD_DIM / 32;
     float q_reg[VEC];
     #pragma unroll
@@ -130,45 +122,55 @@ __global__ void flash_attention_warp_kernel(
     float m_i = -INFINITY;
     float l_i = 0.f;
     float o_reg[VEC] = {0};
-    // ===== 遍历 KV =====
-    for (int kv_pos = 0; kv_pos < Skv; ++kv_pos) {
-        if (causal && kv_pos > q_pos) continue;
-        // ===== dot(Q, K) =====
-        float score_partial = 0.f;
-        #pragma unroll
-        for (int i = 0; i < VEC; ++i) {
-            int d_idx = lane_id + i * 32;
-            score_partial += q_reg[i] *
-                float(shared_K[kv_pos * HEAD_DIM + d_idx]);
+
+    for (int kv_tile = 0; kv_tile < Skv; kv_tile += KV_TILE) {
+        int tile_size = KV_TILE < static_cast<int>(Skv - kv_tile) ? KV_TILE : static_cast<int>(Skv - kv_tile);
+
+        for (int i = threadIdx.x; i < tile_size * HEAD_DIM; i += blockDim.x) {
+            int k = i / HEAD_DIM;
+            int d = i % HEAD_DIM;
+            shared_K[i] = K[kv_base + (kv_tile + k) * HEAD_DIM + d];
+            shared_V[i] = V[kv_base + (kv_tile + k) * HEAD_DIM + d];
         }
-        // ===== warp reduce =====
-        #pragma unroll
-        for (int offset = 16; offset > 0; offset /= 2) {
-            score_partial += __shfl_down_sync(0xffffffff, score_partial, offset);
+        __syncthreads();
+
+        for (int k = 0; k < tile_size; ++k) {
+            int kv_pos = kv_tile + k;
+            if (causal && kv_pos > q_pos) continue;
+
+            float score_partial = 0.f;
+            #pragma unroll
+            for (int i = 0; i < VEC; ++i) {
+                int d_idx = lane_id + i * 32;
+                score_partial += q_reg[i] * float(shared_K[k * HEAD_DIM + d_idx]);
+            }
+            #pragma unroll
+            for (int offset = 16; offset > 0; offset /= 2) {
+                score_partial += __shfl_down_sync(0xffffffff, score_partial, offset);
+            }
+            float score = __shfl_sync(0xffffffff, score_partial, 0);
+            score *= scale_val;
+
+            float m_prev = m_i;
+            m_i = fmaxf(m_i, score);
+            float exp_score = __expf(score - m_i);
+            float exp_prev  = __expf(m_prev - m_i);
+            #pragma unroll
+            for (int i = 0; i < VEC; ++i) {
+                int d_idx = lane_id + i * 32;
+                float v = float(shared_V[k * HEAD_DIM + d_idx]);
+                o_reg[i] = o_reg[i] * exp_prev + exp_score * v;
+            }
+            l_i = l_i * exp_prev + exp_score;
         }
-        float score = __shfl_sync(0xffffffff, score_partial, 0);
-        score *= scale_val;
-        // ===== online softmax =====
-        float m_prev = m_i;
-        m_i = fmaxf(m_i, score);
-        float exp_score = __expf(score - m_i);
-        float exp_prev  = __expf(m_prev - m_i);
-        // ===== update O =====
-        #pragma unroll
-        for (int i = 0; i < VEC; ++i) {
-            int d_idx = lane_id + i * 32;
-            float v = float(shared_V[kv_pos * HEAD_DIM + d_idx]);
-            o_reg[i] = o_reg[i] * exp_prev + exp_score * v;
-        }
-        l_i = l_i * exp_prev + exp_score;
+        __syncthreads();
     }
+
     float inv_l = 1.f / l_i;
-    // ===== 写回 =====
     #pragma unroll
     for (int i = 0; i < VEC; ++i) {
         int d_idx = lane_id + i * 32;
-        out[out_base + q_pos * HEAD_DIM + d_idx] =
-            T(o_reg[i] * inv_l);
+        out[out_base + q_pos * HEAD_DIM + d_idx] = T(o_reg[i] * inv_l);
     }
 }
 void FlashAttentionImpl<Device::CUDA>::execute(Tensor* out) {
@@ -198,24 +200,23 @@ void FlashAttentionImpl<Device::CUDA>::execute(Tensor* out) {
         throw std::runtime_error("invalid sequence length");
     }
     // ===== kernel 配置 =====
-    // 一个 warp 处理一个 query
-    // 一个 block 处理多个 query（多个 warp）
-    constexpr int WARPS_PER_BLOCK = 4;   // 可调: 4 or 8
+    constexpr int KV_TILE = 32;
+    constexpr int WARPS_PER_BLOCK = 4;
     constexpr int THREADS = WARPS_PER_BLOCK * 32;
-    // grid: 每个 (B, head) 一个 block
-    const int blocks = static_cast<int>(B * n_heads);
-    // shared memory: K + V
-    const size_t shared_mem = 2 * Skv * HEAD_DIM * sizeof(__nv_bfloat16); // 按最大类型算（安全）
+    const int blocks_x = static_cast<int>(B * n_heads);
+    const int blocks_y = static_cast<int>((Sq + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK);
+    const dim3 grid_dim(blocks_x, blocks_y);
+    const size_t shared_mem = 2 * KV_TILE * HEAD_DIM * sizeof(__nv_bfloat16);
     // ===== launch =====
     dtype::dispatch(out->dtype, [&]<DataType D>() {
         using T = dtype::type_t<D>;
-        if constexpr (std::is_same_v<T, __half>) {
+        if constexpr (std::is_same_v<T, float16_t>) {
             auto* out_ptr = static_cast<__half*>(out->data);
             auto* Q_ptr   = static_cast<const __half*>(Q->data);
             auto* K_ptr   = static_cast<const __half*>(K->data);
             auto* V_ptr   = static_cast<const __half*>(V->data);
             flash_attention_warp_kernel<__half, HEAD_DIM>
-                <<<blocks, THREADS, shared_mem>>>(
+                <<<grid_dim, THREADS, shared_mem>>>(
                     out_ptr,
                     Q_ptr,
                     K_ptr,
@@ -226,13 +227,13 @@ void FlashAttentionImpl<Device::CUDA>::execute(Tensor* out) {
                     causal,
                     num_kv_groups
                 );
-        } else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+        } else if constexpr (std::is_same_v<T, bfloat16_t>) {
             auto* out_ptr = static_cast<__nv_bfloat16*>(out->data);
             auto* Q_ptr   = static_cast<const __nv_bfloat16*>(Q->data);
             auto* K_ptr   = static_cast<const __nv_bfloat16*>(K->data);
             auto* V_ptr   = static_cast<const __nv_bfloat16*>(V->data);
             flash_attention_warp_kernel<__nv_bfloat16, HEAD_DIM>
-                <<<blocks, THREADS, shared_mem>>>(
+                <<<grid_dim, THREADS, shared_mem>>>(
                     out_ptr,
                     Q_ptr,
                     K_ptr,

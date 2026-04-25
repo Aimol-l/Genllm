@@ -9,6 +9,7 @@
 #include "backend/cpu/attention.h"
 #include "backend/cpu/embedding.h"
 #include "backend/cpu/rope.h"
+#include "backend/cpu/memcpy.h"
 #ifdef BACKEND_CUDA
 #include "backend/cuda/arithmetic.h"
 #include "backend/cuda/normalization.h"
@@ -17,6 +18,7 @@
 #include "backend/cuda/activation.h"
 #include "backend/cuda/attention.h"
 #include "backend/cuda/rope.h"
+#include "backend/cuda/memcpy.h"
 #endif
 
 namespace kernel {
@@ -61,6 +63,16 @@ namespace kernel {
     void apply_rope(Tensor* t)     { device::dispatchOp(t->device, [&]<Device D>() { ops::ApplyRopeImpl<D>::execute(t); }); }
     void rope_cache(Tensor* t){
         ops::RopeCacheImpl<Device::CPU>::execute(t);
+    }
+
+    // ===== memcpy =====
+    void memcpy(Tensor* t) {
+        // Cross-device copies (H2D/D2H) need the accelerator backend (e.g. CUDA).
+        Device dev = t->device;
+        if (t->src[0] && t->src[0]->device != t->device) {
+            dev = (t->device != Device::CPU) ? t->device : t->src[0]->device;
+        }
+        device::dispatchOp(dev, [&]<Device D>() { ops::MemcpyImpl<D>::execute(t); });
     }
 
     // ===== misc =====

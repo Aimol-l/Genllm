@@ -42,6 +42,7 @@ Executor::Executor(GraphScheduler& scheduler)
         for (Tensor* t : level) {
             if (!t->is_computed()) continue;
             auto& map = (t->type == TensorType::TENSOR_TYPE_CACHE) ? persistent_map : step_map;
+            
             auto& grp = map[t->layer_id];
             grp.layer_id = t->layer_id;
             grp.levels.push_back({t});
@@ -49,27 +50,38 @@ Executor::Executor(GraphScheduler& scheduler)
     }
     // 合并同一层内同一依赖级别的 tensor（来自同一个 execution_level 的归为同一 sub-level）
     // 上面每层只有一个 tensor per push_back，需要按 execution_level 归并
-    // 重新构建：按 execution_level 遍历，同一 level + 同一 layer_id 的 tensor 合并
+    // 重新构建：按 execution_level 遍历，同一 level 的 tensor 合并，同时按 CACHE/非CACHE 分到不同 map
     persistent_map.clear();
     step_map.clear();
     for (const auto& level : graph_.get_execution_levels()) {
-        // 按 layer_id 分桶
-        std::map<int, std::vector<Tensor*>> bucket;
+        // 按 layer_id + type 分桶（同一 level 内 CACHE 和 ACTIVATION 必须分开）
+        struct TypeBuckets { std::vector<Tensor*> cache; std::vector<Tensor*> step; };
+        std::map<int, TypeBuckets> bucket;
         for (Tensor* t : level) {
             if (!t->is_computed()) continue;
-            auto& target_map = (t->type == TensorType::TENSOR_TYPE_CACHE) ? persistent_map : step_map;
-            auto& grp = target_map[t->layer_id];
-            grp.layer_id = t->layer_id;
-            bucket[t->layer_id].push_back(t);
+            auto& b = bucket[t->layer_id];
+            if (t->type == TensorType::TENSOR_TYPE_CACHE)
+                b.cache.push_back(t);
+            else
+                b.step.push_back(t);
         }
-        for (auto& [lid, tensors] : bucket) {
-            auto is_cache = tensors.front()->type == TensorType::TENSOR_TYPE_CACHE;
-            auto& target_map = is_cache ? persistent_map : step_map;
-            target_map[lid].levels.push_back(std::move(tensors));
+        for (auto& [lid, tb] : bucket) {
+            if (!tb.cache.empty()) {
+                auto& grp = persistent_map[lid];
+                grp.layer_id = lid;
+                grp.levels.push_back(std::move(tb.cache));
+            }
+            if (!tb.step.empty()) {
+                auto& grp = step_map[lid];
+                grp.layer_id = lid;
+                grp.levels.push_back(std::move(tb.step));
+            }
         }
     }
-    for (auto& [lid, grp] : persistent_map) persistent_layers_.push_back(std::move(grp));
-    for (auto& [lid, grp] : step_map)     step_layers_.push_back(std::move(grp));
+    for (auto& [lid, grp] : persistent_map) 
+        persistent_layers_.push_back(std::move(grp));
+    for (auto& [lid, grp] : step_map)     
+        step_layers_.push_back(std::move(grp));
     std::sort(step_layers_.begin(), step_layers_.end(),
               [](const LayerGroup& a, const LayerGroup& b) { return a.layer_id < b.layer_id; });
 }
@@ -110,6 +122,7 @@ void Executor::forward() {
             for (Tensor* t : level) {
                 // pool_->submit([this, t]() { this->execute_tensor(t); });
                 this->execute_tensor(t);
+                // std::println("{}",t->name);
                 // ops::println(t);
             }
             // pool_->wait();
@@ -125,11 +138,6 @@ void Executor::forward() {
 void Executor::execute_tensor(Tensor* t) {
     if (is_view_op(t->op_type)) {
         this->execute_view(t);
-        return;
-    }
-    if (t->op_type == OperationType::OP_TYPE_MEMCPY) {
-        this->allocate_output(t);
-        this->execute_memcpy(t);
         return;
     }
     this->allocate_output(t); // 给tensor分配内存
@@ -185,11 +193,11 @@ void Executor::decode_step(const std::vector<int32_t>& token_ids) {
 }
 
 int32_t Executor::sample_argmax() const {
-    Tensor* logits = find_tensor("logits");
-    if (!logits || !logits->data) {
-        throw std::runtime_error("Executor::sample_argmax: logits tensor not computed");
+    const auto& outputs = graph_.get_external_outputs();
+    if (outputs.empty() || !outputs[0]->data) {
+        throw std::runtime_error("Executor::sample_argmax: output tensor not computed");
     }
-    // ops::println(logits); // 调试用，打印 logits
+    Tensor* logits = outputs[0];
 
     const size_t vocab_size = scheduler_.vocab_size();
     int32_t target_seq_pos = this->seq_pos_ - 1;
@@ -207,10 +215,11 @@ int32_t Executor::sample_argmax() const {
     return best;
 }
 int32_t Executor::sample() const {
-    Tensor* logits = find_tensor("logits"); // [1, seq_len, vocab_size]，bf16
-    if (!logits || !logits->data) {
-        throw std::runtime_error("Executor::sample: logits tensor not computed");
+    const auto& outputs = graph_.get_external_outputs();
+    if (outputs.empty() || !outputs[0]->data) {
+        throw std::runtime_error("Executor::sample: output tensor not computed");
     }
+    Tensor* logits = outputs[0];
     // ops::println(logits); // 调试用，打印 logits
 
     const float top_p = scheduler_.top_p();
@@ -282,10 +291,11 @@ int32_t Executor::sample() const {
     return 0;
 }
 int32_t Executor::sample_top_p(float temperature, float top_p) const {
-    Tensor* logits = find_tensor("logits");
-    if (!logits || !logits->data) {
-        throw std::runtime_error("Executor::sample_top_p: logits tensor not computed");
+    const auto& outputs = graph_.get_external_outputs();
+    if (outputs.empty() || !outputs[0]->data) {
+        throw std::runtime_error("Executor::sample_top_p: output tensor not computed");
     }
+    Tensor* logits = outputs[0];
     const size_t vocab_size = scheduler_.vocab_size();
     int32_t target_seq_pos = this->seq_pos_ - 1;
     const bfloat16_t* logits_base = static_cast<const bfloat16_t*>(logits->data) + target_seq_pos * vocab_size;
@@ -419,38 +429,6 @@ void Executor::execute_view(Tensor* t) {
     t->offset = src->offset;
 }
 
-void Executor::execute_memcpy(Tensor* t) {
-    Tensor* src = t->src[0];
-    if (!src || !src->data) {
-        throw std::runtime_error(std::format(
-            "Executor::memcpy: source of '{}' has no data", t->name));
-    }
-    size_t nbytes = t->bytes();
-    Device src_dev = src->device;
-    Device dst_dev = t->device;
-
-    if (src_dev == dst_dev) {
-        std::memcpy(t->data, src->data, nbytes);
-        return;
-    }
-
-#ifdef BACKEND_CUDA
-    if (src_dev == Device::CPU && dst_dev == Device::CUDA) {
-        cudaMemcpy(t->data, src->data, nbytes, cudaMemcpyHostToDevice);
-    } else if (src_dev == Device::CUDA && dst_dev == Device::CPU) {
-        cudaMemcpy(t->data, src->data, nbytes, cudaMemcpyDeviceToHost);
-    } else {
-        throw std::runtime_error(std::format(
-            "Executor::memcpy: unsupported {} -> {}",
-            device_to_string(src_dev), device_to_string(dst_dev)));
-    }
-#else
-    throw std::runtime_error(std::format(
-        "Executor::memcpy: cross-device copy requires CUDA backend ({} -> {})",
-        device_to_string(src_dev), device_to_string(dst_dev)));
-#endif
-}
-
 void Executor::dispatch_kernel(Tensor* t) {
     // auto start = std::chrono::steady_clock::now();
     switch (t->op_type) {
@@ -458,7 +436,7 @@ void Executor::dispatch_kernel(Tensor* t) {
         case OperationType::OP_TYPE_VIEW:
         case OperationType::OP_TYPE_TRANSPOSE:      return;
         case OperationType::OP_TYPE_PERMUTE:        kernel::permute(t); break;
-        case OperationType::OP_TYPE_MEMCPY:         return;
+        case OperationType::OP_TYPE_MEMCPY:         kernel::memcpy(t); break;
         case OperationType::OP_TYPE_ADD:            kernel::add(t);     break;
         case OperationType::OP_TYPE_SUB:            kernel::sub(t);     break;
         case OperationType::OP_TYPE_MUL:            kernel::mul(t);     break;

@@ -55,7 +55,6 @@ private:
     void bind_input(const std::string& name, void* data, size_t byte_size);
     void allocate_output(Tensor* t);
     void execute_view(Tensor* t);
-    void execute_memcpy(Tensor* t);
     void execute_tensor(Tensor* t);
     void dispatch_kernel(Tensor* t);
     void reset_step_activations();

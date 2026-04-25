@@ -25,15 +25,20 @@ void AddImpl<Device::CUDA>::execute(Tensor* t) {
 
     dtype::dispatch(t->dtype, [&]<DataType D>() {
         using T = dtype::type_t<D>;
-        if constexpr (std::is_same_v<T,__half>) {
+        if constexpr (std::is_same_v<T,float16_t>) {
             __half*      out = static_cast<__half*>(t->data);
             const __half* in1 = static_cast<const __half*>(x->data);
             const __half* in2 = static_cast<const __half*>(t->src[1]->data);
             add_kernel<<<blocks, threads>>>(in1, in2, out, numel);
-        }else if constexpr(std::is_same_v<T,__nv_bfloat16>){
+        }else if constexpr(std::is_same_v<T,bfloat16_t>){
             __nv_bfloat16* out = static_cast<__nv_bfloat16*>(t->data);
             const __nv_bfloat16* in1 = static_cast<const __nv_bfloat16*>(x->data);
             const __nv_bfloat16* in2 = static_cast<const __nv_bfloat16*>(t->src[1]->data);
+            add_kernel<<<blocks, threads>>>(in1, in2, out, numel);
+        }else if constexpr(std::is_same_v<T,float>){
+            float*      out = static_cast<float*>(t->data);
+            const float* in1 = static_cast<const float*>(x->data);
+            const float* in2 = static_cast<const float*>(t->src[1]->data);
             add_kernel<<<blocks, threads>>>(in1, in2, out, numel);
         }else{
             throw std::runtime_error("cuda::add not implemented");
@@ -56,15 +61,20 @@ void SubImpl<Device::CUDA>::execute(Tensor* t){
 
     dtype::dispatch(t->dtype, [&]<DataType D>() {
         using T = dtype::type_t<D>;
-        if constexpr (std::is_same_v<T,__half>) {
+        if constexpr (std::is_same_v<T,float16_t>) {
             __half*      out = static_cast<__half*>(t->data);
             const __half* in1 = static_cast<const __half*>(x->data);
             const __half* in2 = static_cast<const __half*>(t->src[1]->data);
             sub_kernel<<<blocks, threads>>>(in1, in2, out, numel);
-        }else if constexpr(std::is_same_v<T,__nv_bfloat16>){
+        }else if constexpr(std::is_same_v<T,bfloat16_t>){
             __nv_bfloat16* out = static_cast<__nv_bfloat16*>(t->data);
             const __nv_bfloat16* in1 = static_cast<const __nv_bfloat16*>(x->data);
             const __nv_bfloat16* in2 = static_cast<const __nv_bfloat16*>(t->src[1]->data);
+            sub_kernel<<<blocks, threads>>>(in1, in2, out, numel);
+        }else if constexpr(std::is_same_v<T,float>){
+            float*      out = static_cast<float*>(t->data);
+            const float* in1 = static_cast<const float*>(x->data);
+            const float* in2 = static_cast<const float*>(t->src[1]->data);
             sub_kernel<<<blocks, threads>>>(in1, in2, out, numel);
         }else{
             throw std::runtime_error("cuda::sub not implemented");
@@ -88,15 +98,20 @@ void MulImpl<Device::CUDA>::execute(Tensor* t){
 
     dtype::dispatch(t->dtype, [&]<DataType D>() {
         using T = dtype::type_t<D>;
-        if constexpr (std::is_same_v<T,__half>) {
+        if constexpr (std::is_same_v<T,float16_t>) {
             __half*      out = static_cast<__half*>(t->data);
             const __half* in1 = static_cast<const __half*>(x->data);
             const __half* in2 = static_cast<const __half*>(t->src[1]->data);
             mul_kernel<<<blocks, threads>>>(in1, in2, out, numel);
-        }else if constexpr(std::is_same_v<T,__nv_bfloat16>){
+        }else if constexpr(std::is_same_v<T,bfloat16_t>){
             __nv_bfloat16* out = static_cast<__nv_bfloat16*>(t->data);
             const __nv_bfloat16* in1 = static_cast<const __nv_bfloat16*>(x->data);
             const __nv_bfloat16* in2 = static_cast<const __nv_bfloat16*>(t->src[1]->data);
+            mul_kernel<<<blocks, threads>>>(in1, in2, out, numel);
+        }else if constexpr(std::is_same_v<T,float>){
+            float*      out = static_cast<float*>(t->data);
+            const float* in1 = static_cast<const float*>(x->data);
+            const float* in2 = static_cast<const float*>(t->src[1]->data);
             mul_kernel<<<blocks, threads>>>(in1, in2, out, numel);
         }else{
             throw std::runtime_error("cuda::mul not implemented");
@@ -120,15 +135,20 @@ void DivImpl<Device::CUDA>::execute(Tensor* t){
 
     dtype::dispatch(t->dtype, [&]<DataType D>() {
         using T = dtype::type_t<D>;
-        if constexpr (std::is_same_v<T,__half>) {
+        if constexpr (std::is_same_v<T,float16_t>) {
             __half*      out = static_cast<__half*>(t->data);
             const __half* in1 = static_cast<const __half*>(x->data);
             const __half* in2 = static_cast<const __half*>(t->src[1]->data);
             div_kernel<<<blocks, threads>>>(in1, in2, out, numel);
-        }else if constexpr(std::is_same_v<T,__nv_bfloat16>){
+        }else if constexpr(std::is_same_v<T,bfloat16_t>){
             __nv_bfloat16* out = static_cast<__nv_bfloat16*>(t->data);
             const __nv_bfloat16* in1 = static_cast<const __nv_bfloat16*>(x->data);
             const __nv_bfloat16* in2 = static_cast<const __nv_bfloat16*>(t->src[1]->data);
+            div_kernel<<<blocks, threads>>>(in1, in2, out, numel);
+        }else if constexpr(std::is_same_v<T,float>){
+            float*      out = static_cast<float*>(t->data);
+            const float* in1 = static_cast<const float*>(x->data);
+            const float* in2 = static_cast<const float*>(t->src[1]->data);
             div_kernel<<<blocks, threads>>>(in1, in2, out, numel);
         }else{
             throw std::runtime_error("cuda::div not implemented");

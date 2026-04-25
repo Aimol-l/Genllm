@@ -33,5 +33,6 @@ namespace kernel {
     OPS_API void flash_attention(Tensor* out);
     OPS_API void concat(Tensor* out);
     OPS_API void repeat(Tensor* out);
+    OPS_API void memcpy(Tensor* out);
     OPS_API void rope_cache(Tensor* out);
 } // namespace kernel

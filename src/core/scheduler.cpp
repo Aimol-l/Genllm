@@ -1,5 +1,6 @@
 #include "core/scheduler.h"
 #include "utils/tools.hpp"
+#include <print>
 
 void GraphScheduler::schedule(const std::vector<BackendInfo>& devices) {
     if (devices.empty())
@@ -158,7 +159,8 @@ void GraphScheduler::apply_assignment(
 // ========== 4. 全局节点分配到 CPU ==========
 void GraphScheduler::assign_global_nodes(ComputeGraph& graph, Device cpu) const {
     for (auto* t : graph.get_all_tensors()) {
-        if (t->layer_id >= 0) continue;
+        if (t->layer_id >= 0) 
+            continue;
         t->device = cpu;
     }
 }
@@ -208,51 +210,52 @@ void GraphScheduler::insert_copy_edges(ComputeGraph& graph) const {
         }
     };
 
-    std::unordered_map<Pair, Tensor*, PairHash> cache;
-    std::vector<std::pair<Tensor*, Tensor*>> replacements;
-    int deduped = 0;
-
-    // 遍历所有张量的输入，检查是否跨设备，如果是则插入一个 memcpy 节点，并更新输入指向
+    // 第一趟：只收集跨设备边，不改图（避免遍历时 push_back 导致迭代器失效）
+    struct Edge { Tensor* src; Device dst_dev; int src_idx; Tensor* consumer; };
+    std::vector<Edge> pending;
     for (auto* t : graph.get_all_tensors()) {
         for (int i = 0; i < TENSOR_MAX_SRC; ++i) {
             Tensor* src = t->src[i];
-            if (!src || src->device == t->device) 
-                continue;
-            Pair key{src, t->device};
-            auto it = cache.find(key);
-            if (it != cache.end()) {
-                t->src[i] = it->second;
-                ++deduped;
-                continue;
-            }
-            Tensor* proxy = graph.insert_memcpy(src, t->device);
-            cache[key] = proxy;
-            t->src[i] = proxy;
-            ++deduped;
-            std::println("  [copy] {} ({}) -> {} ({})",src->name, device_to_string(src->device),proxy->name, device_to_string(t->device));
+            if (!src || src->device == t->device) continue;
+            pending.push_back({src, t->device, i, t});
         }
     }
-    for(auto* t:graph.get_external_outputs()){
-        if(t->device != Device::CPU){
-            Pair key{t, Device::CPU};
-            auto it = cache.find(key);
-            if (it != cache.end()) {
-                graph.replace_output(t, it->second);
-                ++deduped;
-                continue;
-            }
-            Tensor* proxy = graph.insert_memcpy(t, Device::CPU);
-            cache[key] = proxy;
-            graph.replace_output(t, proxy);
-            ++deduped;
-            std::println("  [copy] {} ({}) -> {} ({})",
-                         t->name, device_to_string(t->device),
-                         proxy->name, device_to_string(Device::CPU));
+    // 外部输出也需要可能的回拷
+    for (auto* t : graph.get_external_outputs()) {
+        if (t->device != Device::CPU) {
+            pending.push_back({t, Device::CPU, -1, nullptr});
         }
     }
+
+    // 第二趟：插入 memcpy 节点并更新引用
+    std::unordered_map<Pair, Tensor*, PairHash> cache;
+    int deduped = 0;
+    for (auto& e : pending) {
+        Pair key{e.src, e.dst_dev};
+        auto it = cache.find(key);
+        if (it != cache.end()) {
+            if (e.consumer)
+                e.consumer->src[e.src_idx] = it->second;
+            else
+                graph.replace_output(e.src, it->second);
+            ++deduped;
+            continue;
+        }
+        Tensor* proxy = graph.insert_memcpy(e.src, e.dst_dev);
+        cache[key] = proxy;
+        if (e.consumer)
+            e.consumer->src[e.src_idx] = proxy;
+        else
+            graph.replace_output(e.src, proxy);
+        ++deduped;
+        std::println("  [copy] {} ({}) -> {} ({})",
+                     e.src->name, device_to_string(e.src->device),
+                     proxy->name, device_to_string(e.dst_dev));
+    }
+
     if (deduped > 0) {
         graph.rebuild_order();
-        std::println("Inserted {} copy nodes ({} deduplicated refs)",cache.size(), deduped);
+        std::println("Inserted {} copy nodes ({} deduplicated refs)", cache.size(), deduped);
     }
 }
 

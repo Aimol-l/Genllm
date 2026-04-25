@@ -117,16 +117,9 @@ ComputeGraph& ComputeGraph::operator=(ComputeGraph&& other) noexcept {
 
 void ComputeGraph::build_from_outputs(std::initializer_list<Tensor*> outputs) {
     this->clear();
-    // LOG_INFO("1");
     this->external_outputs_.assign(outputs);
-    // LOG_INFO("2");
-
     this->reverse_bfs_collect(external_outputs_);
-    // LOG_INFO("3");
-
     this->topological_sort();
-    // LOG_INFO("4");
-
 }
 
 void ComputeGraph::clear() {
@@ -164,7 +157,7 @@ Tensor* ComputeGraph::insert_memcpy(Tensor* original, Device dst_dev) {
     proxy->device = dst_dev;
     proxy->dtype = original->dtype;
     proxy->dims = original->dims;
-    proxy->layer_id = -1;
+    proxy->layer_id = original->layer_id;
     proxy->src[0] = original;
     add_tensor(proxy);
     return proxy;

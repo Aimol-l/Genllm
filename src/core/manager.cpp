@@ -133,5 +133,4 @@ void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) 
     }
 #endif
     this->print_all_usage();
-    LOG_INFO("Load weights done");
 }
