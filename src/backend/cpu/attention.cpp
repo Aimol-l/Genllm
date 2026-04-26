@@ -3,6 +3,7 @@
 #include <vector>
 #include "backend/cpu/attention.h"
 #include "utils/dtype_traits.hpp"
+#include "core/page_attention.h"
 
 
 namespace ops {
@@ -143,11 +144,44 @@ namespace ops {
     }
 
     void SdpaImpl<Device::CPU>::execute(Tensor* out) {
-        AttentionImpl<Device::CPU>::execute(out);
+        auto& mgr = PagedAttentionManager::instance();
+        if (mgr.is_active(out->layer_id)) {
+            FlashAttentionImpl<Device::CPU>::execute(out);
+        } else {
+            AttentionImpl<Device::CPU>::execute(out);
+        }
     }
 
     void FlashAttentionImpl<Device::CPU>::execute(Tensor* out) {
-        // TODO: flash attention
+        auto& mgr = PagedAttentionManager::instance();
+        int32_t layer_id = out->layer_id;
+        if (!mgr.is_active(layer_id)) return;
+
+        Tensor* Q = out->src[0];
+        Tensor* K = out->src[1];
+        Tensor* V = out->src[2];
+
+        int32_t B = static_cast<int32_t>(Q->dims[0]);
+        int32_t n_heads = static_cast<int32_t>(Q->dims[1]);
+        int32_t Sq = static_cast<int32_t>(Q->dims[2]);
+        int32_t head_dim = static_cast<int32_t>(Q->dims[3]);
+        int32_t n_kv_heads = static_cast<int32_t>(K->dims[1]);
+        int32_t Skv = static_cast<int32_t>(K->dims[2]);
+        int32_t num_kv_groups = static_cast<int32_t>(out->op_params[3]);
+        float scale = out->op_params[1];
+        bool causal = static_cast<int32_t>(out->op_params[2]) != 0;
+
+        auto& layer = mgr.get_layer(layer_id);
+
+        if (Skv > 0) {
+            mgr.append_kv_from_tensor(layer_id, K->data, V->data,n_kv_heads, Skv, head_dim, K->dtype);
+        }
+
+        cpu_paged_attention(
+            out->data, Q->data, B, n_heads, Sq,
+            n_kv_heads, num_kv_groups, head_dim, scale,
+            causal, Q->dtype, layer
+        );
     }
 
 template struct SoftmaxImpl<Device::CPU>;

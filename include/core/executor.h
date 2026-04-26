@@ -26,9 +26,11 @@ private:
         int layer_id;
         std::vector<std::vector<Tensor*>> levels; // 层内的依赖子级别
     };
+    
     std::vector<LayerGroup> persistent_layers_;  // CACHE 类型 (layer_id < 0)
     std::vector<LayerGroup> step_layers_;        // transformer 层，按 layer_id 升序
     
+    std::vector<Tensor*> apply_rope_tensors_;
     std::unordered_map<Device, size_t> persistent_cursor_;
     std::unordered_map<std::string, std::array<int64_t, TENSOR_MAX_DIMS>> original_dims_;
     
@@ -44,7 +46,7 @@ public:
     );
 private:
     void prefill(const std::vector<int32_t>& token_ids);
-    void decode_step(const std::vector<int32_t>& token_ids);
+    void decode_step(int32_t token_id);
 
     void forward();
     int32_t sample()const;

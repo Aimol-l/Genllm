@@ -21,7 +21,7 @@ int main() {
 
     GraphScheduler::Config sched_cfg{
         .vocab_size = model->vocab_size(),
-        .kv_cache_per_layer = 0,    // 目前不区分层，统一估算一个值。实际实现时可以根据模型结构区分不同层的KV cache需求。
+        .kv_cache_per_layer = 1,    // 0 = 原始 attention, >0 = paged attention
         .max_seq_len = 2048,        // 一个合理的默认值，实际使用时可以根据模型和需求调整
         .top_p = 0.8f,              // 采样时的 top-p 参数，越大越保守，越小越激进
         .temperature = 0.2f,        // 采样时的 temperature 越大越随机，越小越确定。0 表示贪心采样。
@@ -43,7 +43,7 @@ int main() {
 
     Tokenizer tokenizer = Tokenizer::from_gguf(parser);
 
-    const std::string user_msg = "1+1=";
+    const std::string user_msg = "中国首都是哪里？";
 
     std::string chat_prompt = std::format("<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n", user_msg);
 
@@ -54,7 +54,7 @@ int main() {
     std::println("========================================================");
     try {
 
-        std::vector<int32_t> output = executor.generate(prompt_ids, 256, tokenizer.eos_id());
+        std::vector<int32_t> output = executor.generate(prompt_ids, 512, tokenizer.eos_id());
         std::println("Generated text: {}", tokenizer.decode(output));
 
     } catch (const std::exception& e) {

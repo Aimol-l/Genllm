@@ -3,6 +3,7 @@
 #include "model/op_factory.hpp"
 #include "utils/bfloat16.hpp"
 #include "utils/tools.hpp"
+#include "core/page_attention.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -32,6 +33,23 @@ Executor::Executor(GraphScheduler& scheduler)
         DevicePools* pools = memory_.get(dev, 0);
         if (pools && pools->activation) {
             dev_id_map_[dev] = pools->activation->device_id();
+        }
+    }
+
+    // 初始化 KV Cache
+    auto& pam = PagedAttentionManager::instance();
+    size_t kv_cache = scheduler_.config().kv_cache_per_layer;
+    if (kv_cache > 0) {
+        int64_t max_seq = scheduler_.config().max_seq_len;
+        int32_t max_blocks = static_cast<int32_t>((max_seq + PAGE_BLOCK_SIZE - 1) / PAGE_BLOCK_SIZE);
+        for (auto* t : graph_.get_all_tensors()) {
+            if (t->op_type == OperationType::OP_TYPE_SDPA && t->src[1]) {
+                int32_t n_kv_heads = static_cast<int32_t>(t->src[1]->dims[1]);
+                int32_t head_dim = static_cast<int32_t>(t->dims[3]);
+                DataType dtype = t->dtype;
+                pam.init_layer(t->layer_id, n_kv_heads, head_dim, dtype);
+                pam.reserve_layer(t->layer_id, max_blocks);
+            }
         }
     }
 
@@ -84,6 +102,13 @@ Executor::Executor(GraphScheduler& scheduler)
         step_layers_.push_back(std::move(grp));
     std::sort(step_layers_.begin(), step_layers_.end(),
               [](const LayerGroup& a, const LayerGroup& b) { return a.layer_id < b.layer_id; });
+
+    // 收集所有 ApplyRoPE tensor，用于 decode 阶段更新 start_pos
+    for (auto* t : graph_.get_all_tensors()) {
+        if (t->op_type == OperationType::OP_TYPE_APPLY_ROPE) {
+            apply_rope_tensors_.push_back(t);
+        }
+    }
 }
 void Executor::forward() {
     // 绑定 input tensor
@@ -155,7 +180,6 @@ std::vector<int32_t> Executor::generate(
         throw std::invalid_argument(std::format("Executor::generate: max_tokens {} exceeds scheduler's max_seq_len {}",max_tokens, scheduler_.config().max_seq_len));
     }
     std::vector<int32_t> output;
-    std::vector<int32_t> token_cache = prompt;
 
     this->prefill(prompt);
 
@@ -164,9 +188,8 @@ std::vector<int32_t> Executor::generate(
 
         if (eos_tokens == next) break;
         output.push_back(next);
-        token_cache.push_back(next);
 
-        this->decode_step(token_cache);
+        this->decode_step(next);
 
         std::print("\rtokens: {}/{}",i+1,max_tokens);
         std::fflush(stdout);
@@ -178,16 +201,25 @@ std::vector<int32_t> Executor::generate(
 void Executor::prefill(const std::vector<int32_t>& token_ids) {
     this->is_prefill_ = true;
     this->seq_pos_ = 0;
+    // 重置 RoPE start_pos = 0（prefill 时位置为 0,1,2,...,seq_len-1）
+    for (auto* t : apply_rope_tensors_) {
+        t->op_params[2] = 0;
+    }
     this->resolve_dims(1, static_cast<int64_t>(token_ids.size()));
     this->bind_input("input_ids", const_cast<int32_t*>(token_ids.data()), token_ids.size() * sizeof(int32_t));
     this->forward();
     this->seq_pos_ = static_cast<int64_t>(token_ids.size());
 }
 
-void Executor::decode_step(const std::vector<int32_t>& token_ids) {
+void Executor::decode_step(int32_t token_id) {
     this->is_prefill_ = false;
-    this->resolve_dims(1, static_cast<int64_t>(token_ids.size())); 
-    this->bind_input("input_ids", const_cast<int32_t*>(token_ids.data()), token_ids.size() * sizeof(int32_t));
+    // decode 时只处理 1 个新 token，seq_len=1
+    this->resolve_dims(1, 1);
+    // RoPE 偏移 = 当前序列长度（新 token 的正确位置）
+    for (auto* t : apply_rope_tensors_) {
+        t->op_params[2] = static_cast<float>(this->seq_pos_);
+    }
+    this->bind_input("input_ids", &token_id, sizeof(int32_t));
     this->forward();
     ++this->seq_pos_;
 }
@@ -200,8 +232,8 @@ int32_t Executor::sample_argmax() const {
     Tensor* logits = outputs[0];
 
     const size_t vocab_size = scheduler_.vocab_size();
-    int32_t target_seq_pos = this->seq_pos_ - 1;
-    const bfloat16_t* logits_base = static_cast<const bfloat16_t*>(logits->data) + target_seq_pos * vocab_size;
+    int32_t token_pos = (logits->dims[2] == 1) ? 0 : (this->seq_pos_ - 1);
+    const bfloat16_t* logits_base = static_cast<const bfloat16_t*>(logits->data) + token_pos * vocab_size;
 
     int32_t best = 0;
     float best_val = static_cast<float>(logits_base[0]);
@@ -220,15 +252,13 @@ int32_t Executor::sample() const {
         throw std::runtime_error("Executor::sample: output tensor not computed");
     }
     Tensor* logits = outputs[0];
-    // ops::println(logits); // 调试用，打印 logits
 
     const float top_p = scheduler_.top_p();
     const float temperature = scheduler_.temperature();
     const size_t vocab_size = scheduler_.vocab_size();
 
-    // 取最后一个位置的 logits
-    int32_t target_seq_pos = this->seq_pos_ - 1;
-    const bfloat16_t* logits_base = static_cast<const bfloat16_t*>(logits->data) + target_seq_pos * vocab_size;
+    int32_t token_pos = (logits->dims[1] == 1) ? 0 : (this->seq_pos_ - 1);
+    const bfloat16_t* logits_base = static_cast<const bfloat16_t*>(logits->data) + token_pos * vocab_size;
 
     // ========== 1. Softmax ==========
     auto probs = ops::Softmax(std::span<const bfloat16_t>(logits_base, vocab_size), temperature);
@@ -297,8 +327,8 @@ int32_t Executor::sample_top_p(float temperature, float top_p) const {
     }
     Tensor* logits = outputs[0];
     const size_t vocab_size = scheduler_.vocab_size();
-    int32_t target_seq_pos = this->seq_pos_ - 1;
-    const bfloat16_t* logits_base = static_cast<const bfloat16_t*>(logits->data) + target_seq_pos * vocab_size;
+    int32_t token_pos = (logits->dims[2] == 1) ? 0 : (this->seq_pos_ - 1);
+    const bfloat16_t* logits_base = static_cast<const bfloat16_t*>(logits->data) + token_pos * vocab_size;
 
     auto probs = ops::Softmax(std::span<const bfloat16_t>(logits_base, vocab_size), temperature);
 
