@@ -26,7 +26,8 @@ int main() {
         .top_p = 0.8f,              // 采样时的 top-p 参数，越大越保守，越小越激进
         .temperature = 0.2f,        // 采样时的 temperature 越大越随机，越小越确定。0 表示贪心采样。
         .memory_headroom = 0.1f,        // 内存头部空间，预留给临时峰值，避免频繁 OOM
-        .activation_pool_factor = 1.2f  // 激活内存池大小 = 实际激活内存需求 * activation_pool_factor。比实际需求大一点点，避免频繁 OOM
+        .kv_cache_pool_factor = 1.2f,   // 缓存内存池大小 = 实际激活内存需求 * activation_pool_factor。比实际需求大一点点，避免可能的OOM
+        .activation_pool_factor = 1.2f  // 激活内存池大小 = 实际激活内存需求 * activation_pool_factor。比实际需求大一点点，避免可能的OOM
     };
 
     GraphScheduler scheduler(graph, sched_cfg);
@@ -54,7 +55,7 @@ int main() {
     std::println("========================================================");
     try {
 
-        executor.generate(prompt_ids, 256, tokenizer.eos_id(), &tokenizer);
+        executor.generate(prompt_ids, 512, tokenizer.eos_id(), &tokenizer);
 
     } catch (const std::exception& e) {
 

@@ -320,9 +320,10 @@ void GraphScheduler::create_memory_pools(const ComputeGraph& graph,const std::ve
     for (auto& [dev, u] : usage) {
         size_t dev_id = dev_id_map[dev];
         size_t act_cap = u.activation_bytes * config_.activation_pool_factor;
+        size_t kv_cap = u.kv_cache_bytes * config_.kv_cache_pool_factor;
         if (act_cap < 64ULL << 20) 
             act_cap = 64ULL << 20;
-        this->mmanager_->get_or_create(dev, dev_id, u.weight_bytes, act_cap, u.kv_cache_bytes);
+        this->mmanager_->get_or_create(dev, dev_id, u.weight_bytes, act_cap, kv_cap);
         std::println("{}:{}  weight_pool={}  activation_pool={}  kv_cache_pool={}",
             device_to_string(dev), dev_id,
             format_bytes(u.weight_bytes), format_bytes(act_cap),

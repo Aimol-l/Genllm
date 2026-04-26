@@ -19,6 +19,7 @@ public:
         float top_p = 0.9f;              // 采样时的 top-p 参数
         float temperature = 0.8f;        // 采样时的 temperature 参数
         float memory_headroom;
+        float kv_cache_pool_factor;
         float activation_pool_factor;  // 激活内存池大小 = 实际激活内存需求 * activation_pool_factor。比实际需求大一点点。
     };
     struct LayerCost {
