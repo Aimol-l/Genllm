@@ -54,8 +54,7 @@ int main() {
     std::println("========================================================");
     try {
 
-        std::vector<int32_t> output = executor.generate(prompt_ids, 512, tokenizer.eos_id());
-        std::println("Generated text: {}", tokenizer.decode(output));
+        executor.generate(prompt_ids, 512, tokenizer.eos_id(), &tokenizer);
 
     } catch (const std::exception& e) {
 

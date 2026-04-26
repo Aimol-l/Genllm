@@ -1,5 +1,6 @@
 #include "core/executor.h"
 #include "core/kernels.h"
+#include "core/tokenizer.h"
 #include "model/op_factory.hpp"
 #include "utils/bfloat16.hpp"
 #include "utils/tools.hpp"
@@ -162,7 +163,8 @@ void Executor::execute_tensor(Tensor* t) {
 std::vector<int32_t> Executor::generate(
     const std::vector<int32_t>& prompt,
     int64_t max_tokens,
-    int32_t eos_tokens)
+    int32_t eos_tokens,
+    Tokenizer* tokenizer)
 {
     if(prompt.empty()) throw std::invalid_argument("Executor::generate: prompt cannot be empty");
     if(max_tokens<=0) throw std::invalid_argument("Executor::generate: max_tokens must be positive");
@@ -179,12 +181,19 @@ std::vector<int32_t> Executor::generate(
         if (eos_tokens == next) break;
         output.push_back(next);
 
-        this->decode_step(next);
+        if (tokenizer) {
+            std::string token_str = tokenizer->decode({next});
+            std::print("{}", token_str);
+            std::fflush(stdout);
+        }
 
-        std::print("\rtokens: {}/{}",i+1,max_tokens);
-        std::fflush(stdout);
+        this->decode_step(next);
     }
-    std::print("\n");
+    if (!tokenizer) {
+        std::print("\rtokens: {}/{}\n", output.size(), max_tokens);
+    } else {
+        std::print("\n");
+    }
     return output;
 }
 

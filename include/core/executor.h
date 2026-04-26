@@ -42,7 +42,8 @@ public:
     std::vector<int32_t> generate(
         const std::vector<int32_t>& prompt,
         int64_t max_tokens,
-        int32_t eos_tokens
+        int32_t eos_tokens,
+        class Tokenizer* tokenizer = nullptr
     );
 private:
     void prefill(const std::vector<int32_t>& token_ids);
