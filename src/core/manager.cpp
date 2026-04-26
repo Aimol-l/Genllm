@@ -8,7 +8,18 @@
 #endif
 
 #include "core/manager.h"
-#include "utils/tools.hpp"
+
+MemoryManager* g_mem_manager = nullptr;
+
+MemoryManager::MemoryManager()
+    : lock_memory_(false) {
+    g_mem_manager = this;
+}
+
+MemoryManager::MemoryManager(bool lock_memory)
+    : lock_memory_(lock_memory) {
+    g_mem_manager = this;
+}
 
 std::unique_ptr<IMemoryResource> MemoryManager::make_resource(Device dev, size_t dev_id) {
     switch (dev) {
@@ -71,6 +82,23 @@ void MemoryManager::print_all_usage() const {
     }
     std::println("========================================================");
 }
+
+PagedAttentionManager& MemoryManager::create_attention_manager(Device dev, size_t dev_id) {
+    DevKey key{dev, dev_id};
+    auto it = attention_managers_.find(key);
+    if (it != attention_managers_.end()) return *it->second;
+    DevicePools* pools = get(dev, dev_id);
+    if (!pools || !pools->kv_cache) {
+        throw std::runtime_error(std::format(
+            "create_attention_manager: device {}:{} has no kv_cache pool",
+            device_to_string(dev), dev_id));
+    }
+    auto mgr = std::make_unique<PagedAttentionManager>(pools->kv_cache.get());
+    auto& ref = *mgr;
+    attention_managers_[key] = std::move(mgr);
+    return ref;
+}
+
 void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) {
     struct WeightEntry {
         Tensor* tensor;
@@ -134,3 +162,9 @@ void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) 
 #endif
     this->print_all_usage();
 }
+PagedAttentionManager* MemoryManager::get_attention_manager(Device dev, size_t dev_id) {
+    DevKey key{dev, dev_id};
+    auto it = attention_managers_.find(key);
+    return it != attention_managers_.end() ? it->second.get() : nullptr;
+}
+

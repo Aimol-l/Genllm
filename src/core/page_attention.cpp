@@ -5,13 +5,16 @@
 #include <cstring>
 #include <limits>
 
-BlockPool::BlockPool(int32_t block_capacity, int32_t n_kv_heads, int32_t head_dim, DataType dtype)
+BlockPool::BlockPool(void* buffer, size_t buffer_bytes, int32_t block_capacity,
+                     int32_t n_kv_heads, int32_t head_dim, DataType dtype)
     : block_capacity_(block_capacity)
     , n_kv_heads_(n_kv_heads)
     , head_dim_(head_dim)
     , elem_size_(data_type_size(dtype))
+    , buffer_(static_cast<uint8_t*>(buffer))
+    , buffer_bytes_(buffer_bytes)
 {
-    blocks_.reserve(block_capacity);
+    block_bytes_ = static_cast<size_t>(PAGE_BLOCK_SIZE) * n_kv_heads_ * head_dim_ * elem_size_;
     free_list_.reserve(block_capacity);
 }
 
@@ -21,27 +24,29 @@ int32_t BlockPool::alloc() {
         free_list_.pop_back();
         return id;
     }
-    if (block_capacity_ > 0 && static_cast<int32_t>(blocks_.size()) >= block_capacity_)
+    if (block_capacity_ > 0 && num_blocks_ >= block_capacity_)
         return -1;
-    size_t bytes = static_cast<size_t>(PAGE_BLOCK_SIZE) * n_kv_heads_ * head_dim_ * elem_size_;
-    blocks_.emplace_back(bytes, 0);
-    return static_cast<int32_t>(blocks_.size()) - 1;
+    return num_blocks_++;
 }
 
 void BlockPool::free(int32_t block_id) {
-    if (block_id >= 0 && block_id < static_cast<int32_t>(blocks_.size()))
+    if (block_id >= 0 && block_id < num_blocks_)
         free_list_.push_back(block_id);
 }
 
 void* BlockPool::block_data(int32_t block_id) const {
-    if (block_id < 0 || block_id >= static_cast<int32_t>(blocks_.size()))
+    if (block_id < 0 || block_id >= num_blocks_ || !buffer_)
         return nullptr;
-    return const_cast<uint8_t*>(blocks_[block_id].data());
+    return buffer_ + static_cast<size_t>(block_id) * block_bytes_;
 }
 
-PagedAttentionManager& PagedAttentionManager::instance() {
-    static PagedAttentionManager mgr;
-    return mgr;
+// ---------------------------------------------------------------------------
+// PagedAttentionManager
+// ---------------------------------------------------------------------------
+
+PagedAttentionManager::PagedAttentionManager(MemoryPool* pool)
+    : pool_(pool)
+{
 }
 
 void PagedAttentionManager::init_layer(int32_t layer_id, int32_t n_kv_heads, int32_t head_dim, DataType dtype) {
@@ -55,9 +60,16 @@ void PagedAttentionManager::init_layer(int32_t layer_id, int32_t n_kv_heads, int
 
 void PagedAttentionManager::reserve_layer(int32_t layer_id, int32_t max_blocks) {
     auto& s = layers_[layer_id];
-    if (!s.active) return;
-    s.k_pool = BlockPool(max_blocks, s.n_kv_heads, s.head_dim, s.dtype);
-    s.v_pool = BlockPool(max_blocks, s.n_kv_heads, s.head_dim, s.dtype);
+    if (!s.active || !pool_) return;
+
+    size_t block_bytes = static_cast<size_t>(PAGE_BLOCK_SIZE) * s.n_kv_heads * s.head_dim * data_type_size(s.dtype);
+    size_t total_bytes = static_cast<size_t>(max_blocks) * block_bytes;
+
+    MemoryBlock k_block = pool_->allocate(total_bytes, 64);
+    s.k_pool = BlockPool(k_block.ptr, total_bytes, max_blocks, s.n_kv_heads, s.head_dim, s.dtype);
+
+    MemoryBlock v_block = pool_->allocate(total_bytes, 64);
+    s.v_pool = BlockPool(v_block.ptr, total_bytes, max_blocks, s.n_kv_heads, s.head_dim, s.dtype);
 }
 
 void PagedAttentionManager::append_kv_from_tensor(
@@ -70,8 +82,6 @@ void PagedAttentionManager::append_kv_from_tensor(
     int32_t num_cached = s.num_cached;
     size_t elem_size = data_type_size(dtype);
     size_t head_dim_bytes = static_cast<size_t>(head_dim) * elem_size;
-    // K/V 张量是物理 permuted 布局 [1, n_kv_heads, Skv, head_dim]:
-    //   head h, position p, dim d 在: h * Skv * head_dim + p * head_dim + d
     size_t head_stride_bytes = static_cast<size_t>(Skv) * head_dim * elem_size;
 
     for (int32_t p = 0; p < Skv; ++p) {
@@ -135,13 +145,16 @@ void PagedAttentionManager::append_kv_from_pos(
         uint8_t* v_dst = static_cast<uint8_t*>(s.v_pool.block_data(entry.v_block_id))
                         + static_cast<size_t>(offset_in_block) * n_kv_heads * head_dim * elem_size;
 
-        const uint8_t* k_src = static_cast<const uint8_t*>(K_data) + static_cast<size_t>(p) * n_kv_heads * head_dim * elem_size;
-        const uint8_t* v_src = static_cast<const uint8_t*>(V_data) + static_cast<size_t>(p) * n_kv_heads * head_dim * elem_size;
-
-        std::memcpy(k_dst, k_src, static_cast<size_t>(n_kv_heads) * head_dim_bytes);
-        std::memcpy(v_dst, v_src, static_cast<size_t>(n_kv_heads) * head_dim_bytes);
+        for (int32_t h = 0; h < n_kv_heads; ++h) {
+            std::memcpy(k_dst + h * head_dim_bytes,
+                        static_cast<const uint8_t*>(K_data) + static_cast<size_t>(p) * head_dim_bytes,
+                        head_dim_bytes);
+            std::memcpy(v_dst + h * head_dim_bytes,
+                        static_cast<const uint8_t*>(V_data) + static_cast<size_t>(p) * head_dim_bytes,
+                        head_dim_bytes);
+        }
     }
-    s.num_cached += count;
+    s.num_cached = std::max(s.num_cached, global_pos + count);
 }
 
 PagedAttentionManager::LayerState& PagedAttentionManager::get_layer(int32_t layer_id) {

@@ -8,6 +8,7 @@
 #include "graph.h"
 #include "utils/utils.hpp"
 #include "core/gguf_parser.h"
+#include "core/page_attention.h"
 
 class MemoryManager {
 private:
@@ -24,11 +25,11 @@ private:
 
     bool lock_memory_ = false;
     std::unordered_map<DevKey, DevicePools, DevKeyHash> devices_;
-    
+    std::unordered_map<DevKey, std::unique_ptr<PagedAttentionManager>, DevKeyHash> attention_managers_;
     std::unique_ptr<IMemoryResource> make_resource(Device dev, size_t dev_id);
 public:
-    MemoryManager() = default;
-    MemoryManager(bool lock_memory) : lock_memory_(lock_memory) {}
+    MemoryManager();
+    explicit MemoryManager(bool lock_memory);
     ~MemoryManager() = default;
     MemoryManager(const MemoryManager&) = delete;
     MemoryManager& operator=(const MemoryManager&) = delete;
@@ -44,4 +45,10 @@ public:
                                size_t weight_cap,
                                size_t activation_cap,
                                size_t kv_cap = 0);
+
+    PagedAttentionManager& create_attention_manager(Device dev, size_t dev_id);
+    PagedAttentionManager* get_attention_manager(Device dev, size_t dev_id);
+    
 };
+
+extern MemoryManager* g_mem_manager;

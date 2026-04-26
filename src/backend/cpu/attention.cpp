@@ -3,7 +3,7 @@
 #include <vector>
 #include "backend/cpu/attention.h"
 #include "utils/dtype_traits.hpp"
-#include "core/page_attention.h"
+#include "core/manager.h"
 
 
 namespace ops {
@@ -144,8 +144,9 @@ namespace ops {
     }
 
     void SdpaImpl<Device::CPU>::execute(Tensor* out) {
-        auto& mgr = PagedAttentionManager::instance();
-        if (mgr.is_active(out->layer_id)) {
+        auto* mgr = g_mem_manager->get_attention_manager(out->device,0);
+
+        if (mgr && mgr->is_active(out->layer_id)) {
             FlashAttentionImpl<Device::CPU>::execute(out);
         } else {
             AttentionImpl<Device::CPU>::execute(out);
@@ -153,9 +154,10 @@ namespace ops {
     }
 
     void FlashAttentionImpl<Device::CPU>::execute(Tensor* out) {
-        auto& mgr = PagedAttentionManager::instance();
+        auto* mgr = g_mem_manager->get_attention_manager(out->device,0);
+
         int32_t layer_id = out->layer_id;
-        if (!mgr.is_active(layer_id)) return;
+        if (!mgr || !mgr->is_active(layer_id)) return;
 
         Tensor* Q = out->src[0];
         Tensor* K = out->src[1];
@@ -171,10 +173,10 @@ namespace ops {
         float scale = out->op_params[1];
         bool causal = static_cast<int32_t>(out->op_params[2]) != 0;
 
-        auto& layer = mgr.get_layer(layer_id);
+        auto& layer = mgr->get_layer(layer_id);
 
         if (Skv > 0) {
-            mgr.append_kv_from_tensor(layer_id, K->data, V->data,n_kv_heads, Skv, head_dim, K->dtype);
+            mgr->append_kv_from_tensor(layer_id, K->data, V->data,n_kv_heads, Skv, head_dim, K->dtype);
         }
 
         cpu_paged_attention(

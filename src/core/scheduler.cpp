@@ -1,4 +1,5 @@
 #include "core/scheduler.h"
+#include "core/page_attention.h"
 #include "utils/tools.hpp"
 #include <print>
 
@@ -26,6 +27,7 @@ void GraphScheduler::schedule(const std::vector<BackendInfo>& devices) {
     this->assign_global_nodes(this->graph_, cpu); // 4. 添加全局节点，如rope_sin / cos
     this->insert_copy_edges(this->graph_);         // 为跨设备情况添加拷贝节点
     this->create_memory_pools(this->graph_, devices); // 创建内存池
+    this->initialize_kv_cache();                       // 初始化 KV cache 的 page table
     this->print_summary(costs, devices);
     LOG_INFO("scheduling done");
 }
@@ -87,7 +89,7 @@ std::vector<GraphScheduler::LayerAssignment> GraphScheduler::assign_layers(
               });
     if (compute_devs.empty()) {
         if (!costs.empty())
-            return {{costs.front().layer_id, costs.back().layer_id, Device::CPU, 0, 0, 0}};
+            return {{costs.front().layer_id, costs.back().layer_id, Device::CPU, 0, 0, 0, 0}};
         return {};
     }
     size_t total = 0;
@@ -116,8 +118,8 @@ std::vector<GraphScheduler::LayerAssignment> GraphScheduler::assign_layers(
         }
         if (switch_dev && dev_idx + 1 < static_cast<int>(n)) {
             result.push_back({range_start, costs[i - 1].layer_id,
-                              compute_devs[dev_idx]->device, range_bytes,
-                              range_weight, range_act});
+                              compute_devs[dev_idx]->device, compute_devs[dev_idx]->id,
+                              range_bytes, range_weight, range_act});
             ++dev_idx;
             range_start = cost.layer_id;
             accumulated = 0;
@@ -131,7 +133,7 @@ std::vector<GraphScheduler::LayerAssignment> GraphScheduler::assign_layers(
         range_act += cost.activation_bytes;
     }
     result.push_back({range_start, costs.back().layer_id, compute_devs[dev_idx]->device,
-                      range_bytes, range_weight, range_act});
+                      compute_devs[dev_idx]->id, range_bytes, range_weight, range_act});
     return result;
 }
 
@@ -270,6 +272,7 @@ void GraphScheduler::create_memory_pools(const ComputeGraph& graph,const std::ve
     struct DeviceMemUsage {
         size_t weight_bytes = 0;
         size_t activation_bytes = 0;
+        size_t kv_cache_bytes = 0;
     };
     std::unordered_map<Device, DeviceMemUsage> usage;
 
@@ -290,7 +293,6 @@ void GraphScheduler::create_memory_pools(const ComputeGraph& graph,const std::ve
         layer_act[t->layer_id] += t->bytes_at(config_.max_seq_len);
     }
     for (auto& [dev, u] : usage) {
-        // 找到该设备上最大单层激活量
         size_t max_act = 0;
         for (auto* t : graph.get_all_tensors()) {
             if (t->type == TensorType::TENSOR_TYPE_VIEW || t->type == TensorType::TENSOR_TYPE_WEIGHT) continue;
@@ -299,6 +301,20 @@ void GraphScheduler::create_memory_pools(const ComputeGraph& graph,const std::ve
             if (la > max_act) max_act = la;
         }
         u.activation_bytes = max_act;
+
+        // KV cache 池：累加该设备上所有层的 paged cache
+        if (config_.kv_cache_per_layer > 0) {
+            int64_t max_seq = config_.max_seq_len;
+            int32_t max_blocks = static_cast<int32_t>((max_seq + PAGE_BLOCK_SIZE - 1) / PAGE_BLOCK_SIZE);
+            for (auto* t : graph.get_all_tensors()) {
+                if (t->op_type != OperationType::OP_TYPE_SDPA || !t->src[1]) continue;
+                if (t->device != dev) continue;
+                int32_t n_kv_heads = static_cast<int32_t>(t->src[1]->dims[1]);
+                int32_t head_dim = static_cast<int32_t>(t->dims[3]);
+                size_t block_bytes = static_cast<size_t>(PAGE_BLOCK_SIZE) * n_kv_heads * head_dim * data_type_size(t->dtype);
+                u.kv_cache_bytes += 2 * static_cast<size_t>(max_blocks) * block_bytes;
+            }
+        }
     }
 
     for (auto& [dev, u] : usage) {
@@ -306,7 +322,37 @@ void GraphScheduler::create_memory_pools(const ComputeGraph& graph,const std::ve
         size_t act_cap = u.activation_bytes * config_.activation_pool_factor;
         if (act_cap < 64ULL << 20) 
             act_cap = 64ULL << 20;
-        this->mmanager_->get_or_create(dev, dev_id, u.weight_bytes, act_cap, 0); // kv先认为0
-        std::println("{}:{}  weight_pool={}  activation_pool={}",device_to_string(dev), dev_id,format_bytes(u.weight_bytes), format_bytes(act_cap));
+        this->mmanager_->get_or_create(dev, dev_id, u.weight_bytes, act_cap, u.kv_cache_bytes);
+        std::println("{}:{}  weight_pool={}  activation_pool={}  kv_cache_pool={}",
+            device_to_string(dev), dev_id,
+            format_bytes(u.weight_bytes), format_bytes(act_cap),
+            format_bytes(u.kv_cache_bytes));
+    }
+}
+
+void GraphScheduler::initialize_kv_cache() {
+    if (config_.kv_cache_per_layer == 0) return;
+
+    int64_t max_seq = config_.max_seq_len;
+    int32_t max_blocks = static_cast<int32_t>((max_seq + PAGE_BLOCK_SIZE - 1) / PAGE_BLOCK_SIZE);
+
+    // 按 assignment 的设备分组，每个 assignment 有正确的 dev_id
+    for (const auto& assign : assignments_) {
+        DevicePools* pools = mmanager_->get(assign.device, assign.dev_id);
+        if (!pools || !pools->kv_cache) continue;
+
+        PagedAttentionManager& pam = mmanager_->create_attention_manager(assign.device, assign.dev_id);
+        for (int l = assign.start_layer; l <= assign.end_layer; ++l) {
+            for (auto* t : graph_.get_all_tensors()) {
+                if (t->op_type != OperationType::OP_TYPE_SDPA || !t->src[1]) continue;
+                if (t->layer_id != l) continue;
+
+                int32_t n_kv_heads = static_cast<int32_t>(t->src[1]->dims[1]);
+                int32_t head_dim = static_cast<int32_t>(t->dims[3]);
+                DataType dtype = t->dtype;
+                pam.init_layer(t->layer_id, n_kv_heads, head_dim, dtype);
+                pam.reserve_layer(t->layer_id, max_blocks);
+            }
+        }
     }
 }

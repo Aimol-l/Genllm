@@ -3,7 +3,6 @@
 #include "model/op_factory.hpp"
 #include "utils/bfloat16.hpp"
 #include "utils/tools.hpp"
-#include "core/page_attention.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -36,20 +35,11 @@ Executor::Executor(GraphScheduler& scheduler)
         }
     }
 
-    // 初始化 KV Cache
-    auto& pam = PagedAttentionManager::instance();
-    size_t kv_cache = scheduler_.config().kv_cache_per_layer;
-    if (kv_cache > 0) {
-        int64_t max_seq = scheduler_.config().max_seq_len;
-        int32_t max_blocks = static_cast<int32_t>((max_seq + PAGE_BLOCK_SIZE - 1) / PAGE_BLOCK_SIZE);
-        for (auto* t : graph_.get_all_tensors()) {
-            if (t->op_type == OperationType::OP_TYPE_SDPA && t->src[1]) {
-                int32_t n_kv_heads = static_cast<int32_t>(t->src[1]->dims[1]);
-                int32_t head_dim = static_cast<int32_t>(t->dims[3]);
-                DataType dtype = t->dtype;
-                pam.init_layer(t->layer_id, n_kv_heads, head_dim, dtype);
-                pam.reserve_layer(t->layer_id, max_blocks);
-            }
+    // KV Cache 初始化已在 GraphScheduler::schedule() 中完成
+    // 此处仅确保 pool 和 manager 存在
+    if (scheduler_.config().kv_cache_per_layer > 0) {
+        if (!memory_.get(Device::CPU, 0) || !memory_.get(Device::CPU, 0)->kv_cache) {
+            throw std::runtime_error("Executor: CPU kv_cache pool not initialized by scheduler");
         }
     }
 

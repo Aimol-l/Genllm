@@ -33,7 +33,7 @@ int main() {
 
     scheduler.schedule(DeviceManager::instance().get_devices());
 
-    scheduler.export_dot("qwen3_graph.dot");
+    // scheduler.export_dot("qwen3_graph.dot");
 
     std::unique_ptr<MemoryManager>& manager = scheduler.mmanager();
 

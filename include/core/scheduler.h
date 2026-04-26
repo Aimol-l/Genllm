@@ -32,12 +32,13 @@ public:
         int start_layer = 0;
         int end_layer = 0;
         Device device = Device::CPU;
+        size_t dev_id = 0;
         size_t total_bytes = 0;
         size_t weight_bytes = 0;
         size_t activation_bytes = 0;
         LayerAssignment() = default;
-        LayerAssignment(int s, int e, Device d, size_t b, size_t w, size_t a)
-            : start_layer(s), end_layer(e), device(d),
+        LayerAssignment(int s, int e, Device d, size_t id, size_t b, size_t w, size_t a)
+            : start_layer(s), end_layer(e), device(d), dev_id(id),
               total_bytes(b), weight_bytes(w), activation_bytes(a) {}
     };
     explicit GraphScheduler(ComputeGraph cg, Config cfg)
@@ -76,6 +77,7 @@ private:
 
     void insert_copy_edges(ComputeGraph& graph) const;
     void create_memory_pools(const ComputeGraph& graph, const std::vector<BackendInfo>& devices);
+    void initialize_kv_cache();
     void print_summary(const std::vector<LayerCost>& costs, const std::vector<BackendInfo>& devices) const;
 
     static std::string format_bytes(size_t bytes) {

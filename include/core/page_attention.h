@@ -5,6 +5,7 @@
 #include <memory>
 #include "utils/utils.hpp"
 #include "utils/dtype_traits.hpp"
+#include "pools.h"
 
 constexpr int32_t PAGE_BLOCK_SIZE = 16;
 
@@ -16,21 +17,25 @@ struct PageEntry {
 class BlockPool {
 public:
     BlockPool() = default;
-    BlockPool(int32_t block_capacity, int32_t n_kv_heads, int32_t head_dim, DataType dtype);
+    BlockPool(void* buffer, size_t buffer_bytes, int32_t block_capacity,
+              int32_t n_kv_heads, int32_t head_dim, DataType dtype);
 
     int32_t alloc();
     void free(int32_t block_id);
     void* block_data(int32_t block_id) const;
-    int32_t num_blocks() const { return static_cast<int32_t>(blocks_.size()); }
+    int32_t num_blocks() const { return num_blocks_; }
     int32_t num_free() const { return static_cast<int32_t>(free_list_.size()); }
-    bool empty() const { return blocks_.empty(); }
+    bool empty() const { return num_blocks_ == 0; }
 
 private:
     int32_t block_capacity_ = 0;
     int32_t n_kv_heads_ = 0;
     int32_t head_dim_ = 0;
     size_t elem_size_ = 0;
-    std::vector<std::vector<uint8_t>> blocks_;
+    size_t block_bytes_ = 0;
+    uint8_t* buffer_ = nullptr;
+    size_t buffer_bytes_ = 0;
+    int32_t num_blocks_ = 0;
     std::vector<int32_t> free_list_;
 
     friend class PagedAttentionManager;
@@ -38,7 +43,8 @@ private:
 
 class PagedAttentionManager {
 public:
-    static PagedAttentionManager& instance();
+    PagedAttentionManager() = default;
+    explicit PagedAttentionManager(MemoryPool* pool);
 
     struct LayerState {
         int32_t n_kv_heads = 0;
@@ -71,6 +77,7 @@ public:
 
 private:
     std::unordered_map<int32_t, LayerState> layers_;
+    MemoryPool* pool_ = nullptr;
 };
 
 void cpu_paged_attention(
