@@ -27,6 +27,7 @@ struct TensorInfo {
 // GGUF 头部信息结构
 struct GGUFInfo {
     Json metadata;
+    uint32_t offset;    // 张量起始地址偏移
     uint32_t version;
     uint64_t tensor_count;
     uint64_t metadata_kv_count;
@@ -51,13 +52,14 @@ struct GGUFInfo {
         std::println("model name:               {}", get_model_name());
         std::println("kv_count:                 {}", metadata_kv_count);
         std::println("tensor_count:             {}", tensor_count);
+        std::println("data_offset:              {}", offset);
         // 打印张量信息
         std::println("{:-<26} {:-<8} {:-<14}", "", "", "");
         std::println("{:<26} {:<8} {}", "名称", "数据类型", "维度");
         std::println("{:-<26} {:-<8} {:-<14}", "", "", "");
         for(const auto& info:tensors_info){
-            std::println("{:<26} {:<8} {}", info.name, data_type_to_string(info.dtype), info.dimensions);
-            // std::println("(\"{}\",\"{}\",{}),", info.name, data_type_to_string(info.dtype), info.dimensions);
+            // std::println("{:<26} {:<8} {}", info.name, data_type_to_string(info.dtype), info.dimensions);
+            std::println("(\"{}\",\"{}\",{}),", info.name, data_type_to_string(info.dtype), info.dimensions);
         }
         std::println("{:-<26} {:-<8} {:-<14}", "", "", "");
     }

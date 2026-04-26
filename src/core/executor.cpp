@@ -37,12 +37,6 @@ Executor::Executor(GraphScheduler& scheduler)
     }
 
     // KV Cache 初始化已在 GraphScheduler::schedule() 中完成
-    // 此处仅确保 pool 和 manager 存在
-    if (scheduler_.config().kv_cache_per_layer > 0) {
-        if (!memory_.get(Device::CPU, 0) || !memory_.get(Device::CPU, 0)->kv_cache) {
-            throw std::runtime_error("Executor: CPU kv_cache pool not initialized by scheduler");
-        }
-    }
 
     // 从 execution_levels_ 按 layer_id 分组：CACHE → persistent_layers_，其余 → step_layers_
     // 用 map 保持 layer_id 有序，后续转为 vector

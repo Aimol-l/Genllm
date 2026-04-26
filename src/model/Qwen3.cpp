@@ -19,7 +19,7 @@ void Qwen3Model::print_info(){
 
 void Qwen3Model::parse_config(const GGUFInfo& info) {
     auto& meta = info.metadata;
-    config_.hidden_size       = meta.value("qwen3.embedding_length", 1024);
+    config_.hidden_size       = meta.value("qwen3.embedding_length", -1);
     config_.num_layers        = meta.value("qwen3.block_count", 28);
     config_.num_heads         = meta.value("qwen3.attention.head_count", 16);
     config_.num_kv_heads      = meta.value("qwen3.attention.head_count_kv", 8);
@@ -156,7 +156,7 @@ Tensor* Qwen3Model::build_qwen3_layer(
     
     // 1.6 SDPA / FlashAttention
     //  [B, num_heads, seq_len, head_dim]
-    Tensor* attn_4d = OpFactory::SDPA(q_rope, k_rope, v_4d,nullptr,1.0f/(std::sqrt(float(head_dim))),true,16 / 8,"attn_4d",layer_idx);
+    Tensor* attn_4d = OpFactory::SDPA(q_rope, k_rope, v_4d,nullptr,1.0f/(std::sqrt(float(head_dim))),true,config_.num_heads / config_.num_kv_heads,"attn_4d",layer_idx);
     
     // 1.7 [B, num_heads, seq_len, head_dim] -> [B, seq_len, num_heads, head_dim] -> [B, seq_len, num_heads*head_dim]
     Tensor* attn_flat = OpFactory::permute_reshape(attn_4d,{0, 2, 1, 3},{1,-1,num_heads * head_dim},"attn_flat",layer_idx);

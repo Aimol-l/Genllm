@@ -62,6 +62,7 @@ GGUFInfo GGUFParser::parse() {
     }
     data_offset_ = raw_offset + (alignment - raw_offset % alignment) % alignment; // 5951936
 
+    info.offset = data_offset_;
     return info;
 }
 Json GGUFParser::parse_metadata(uint64_t kv_count) {
@@ -83,6 +84,7 @@ std::vector<TensorInfo> GGUFParser::parse_tensors_info(uint64_t tensor_count) {
         assert(dims == 1 || dims == 2); // 当前版本只支持1/2维张量
         info.dimensions.resize(dims);
         for (uint32_t d = 0; d < dims; d++) {
+            // info.dimensions[d] = static_cast<int64_t>(read_uint64_le());
             info.dimensions[dims - d -1] = static_cast<int64_t>(read_uint64_le()); // 反转维度顺序，更符合pytorch的行优先存储习惯
         }
         info.dtype = static_cast<DataType>(read_uint32_le());

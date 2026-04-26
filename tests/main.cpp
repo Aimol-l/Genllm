@@ -11,10 +11,9 @@ int main() {
 
     DeviceManager::instance().print_devices();
 
-    GGUFParser parser("models/Qwen3-0.6B-BF16.gguf");
+    GGUFParser parser("models/Qwen3-4B-BF16.gguf");
 
     parser.info().print_info();
-    return 0;
 
     std::unique_ptr<ModelBase> model = ModelFactory::CreateFromGGUF(parser.info());
 
@@ -55,7 +54,7 @@ int main() {
     std::println("========================================================");
     try {
 
-        executor.generate(prompt_ids, 512, tokenizer.eos_id(), &tokenizer);
+        executor.generate(prompt_ids, 256, tokenizer.eos_id(), &tokenizer);
 
     } catch (const std::exception& e) {
 
