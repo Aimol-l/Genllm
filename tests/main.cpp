@@ -13,7 +13,8 @@ int main() {
 
     GGUFParser parser("models/Qwen3-0.6B-BF16.gguf");
 
-    // parser.info().print_info();
+    parser.info().print_info();
+    return 0;
 
     std::unique_ptr<ModelBase> model = ModelFactory::CreateFromGGUF(parser.info());
 
