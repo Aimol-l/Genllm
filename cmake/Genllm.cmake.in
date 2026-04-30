@@ -1,0 +1,10 @@
+@PACKAGE_INIT@
+
+# 包含 targets
+include("${CMAKE_CURRENT_LIST_DIR}/GenllmTargets.cmake")
+
+# 导出公共头文件目录
+set(TensorVia_INCLUDE_DIRS "@CMAKE_INSTALL_FULL_INCLUDEDIR@")
+set(TensorVia_LIBRARIES Genllm::Genllm)
+
+check_required_components(Genllm)
