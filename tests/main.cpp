@@ -42,7 +42,10 @@ int main() {
 
     Tokenizer tokenizer = Tokenizer::from_gguf(parser);
 
-    const std::string user_msg = "1+1=";
+    const std::string user_msg = "Hello World";
+
+    std::vector<int32_t> prompt = tokenizer.encode(user_msg);
+    std::println("Prompt: {}", prompt);
 
     std::string chat_prompt = std::format("<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n", user_msg);
 
