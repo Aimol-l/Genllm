@@ -1,11 +1,11 @@
 #include <print>
-#include "core/graph.h"
+
+#include "tokenizer.h"
+#include "model/model.h"
+#include "utils/tools.hpp"
+#include "core/executor.h"
 #include "backend/backend.h"
 #include "core/gguf_parser.h"
-#include "model/model.h"
-#include "tokenizer.h"
-#include "core/executor.h"
-#include "utils/tools.hpp"
 
 int main() {
 
@@ -35,7 +35,7 @@ int main() {
 
     scheduler.schedule(DeviceManager::instance().get_devices());
 
-    scheduler.export_dot("qwen3-graph.dot");
+    // scheduler.export_dot("qwen3-graph.dot");
 
     std::unique_ptr<MemoryManager>& manager = scheduler.mmanager();
 

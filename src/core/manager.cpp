@@ -51,20 +51,23 @@ DevicePools& MemoryManager::get_or_create(
     DevKey key{dev, dev_id};
     auto it = devices_.find(key);
     if (it != devices_.end()) return it->second;
-    auto res_w = this->make_resource(dev, dev_id);
-    auto res_a = this->make_resource(dev, dev_id);
     DevicePools pools;
+
     if (weight_cap > 0) {
+        auto res_w = this->make_resource(dev, dev_id);
         pools.weight = std::make_unique<MemoryPool>(std::move(res_w), weight_cap, "weight");
     }
     if (activation_cap > 0) {
+        auto res_a = this->make_resource(dev, dev_id);
         pools.activation = std::make_unique<MemoryPool>(std::move(res_a), activation_cap, "activation");
     }
     if (kv_cap > 0) {
         auto res_k = this->make_resource(dev, dev_id);
         pools.kv_cache = std::make_unique<MemoryPool>(std::move(res_k), kv_cap, "kv_cache");
     }
+
     auto [inserted, _] = devices_.emplace(key, std::move(pools));
+    
     return inserted->second;
 }
 
@@ -151,7 +154,11 @@ void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) 
 
 #ifdef BACKEND_CUDA
     if (!gpu_weights.empty()) {
-        std::vector<char> staging;
+        size_t max_weight = 0;
+        for (auto& e : gpu_weights)
+            if (e.tensor->device == Device::CUDA) max_weight = std::max(max_weight, e.tensor->bytes());
+        std::vector<char> staging(max_weight);
+
         for (auto& entry : gpu_weights) {
             if (entry.tensor->device != Device::CUDA) continue;
             size_t size = entry.tensor->bytes();
@@ -160,8 +167,7 @@ void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) 
                 throw std::runtime_error(std::format("load_weights: no weight pool for {} tensor {}",device_to_string(entry.tensor->device), entry.tensor->name));
             }
             MemoryBlock block = pools->weight->allocate(size, 32);
-            staging.resize(size);
-            parser.read_tensor_data(entry.gguf_offset, staging.data(), size,entry.tensor);
+            parser.read_tensor_data(entry.gguf_offset, staging.data(), size, entry.tensor);
             cudaMemcpy(block.ptr, staging.data(), size, cudaMemcpyHostToDevice);
             entry.tensor->data = block.ptr;
             entry.tensor->offset = block.offset;
@@ -172,20 +178,25 @@ void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) 
 #ifdef BACKEND_VULKAN
     if (!gpu_weights.empty()) {
         auto& ctx = VulkanContext::get();
+        constexpr int vk_dev = 0;
+
+        size_t max_weight = 0;
+        for (auto& e : gpu_weights)
+            if (e.tensor->device == Device::VULKAN) max_weight = std::max(max_weight, e.tensor->bytes());
+
+        vk::DeviceMemory staging_mem;
+        void* staging_mapped;
+        vk::Buffer staging_buf = ctx.createStagingBuffer(vk_dev, max_weight, &staging_mem, &staging_mapped);
+
         for (auto& entry : gpu_weights) {
             if (entry.tensor->device != Device::VULKAN) continue;
             size_t size = entry.tensor->bytes();
-            int vk_dev = 0;
             DevicePools* pools = this->get(Device::VULKAN, vk_dev);
             if (!pools || !pools->weight) {
                 throw std::runtime_error(std::format(
                     "load_weights: no weight pool for Vulkan tensor {}", entry.tensor->name));
             }
             MemoryBlock block = pools->weight->allocate(size, 32);
-
-            vk::DeviceMemory staging_mem;
-            void* staging_mapped;
-            vk::Buffer staging_buf = ctx.createStagingBuffer(vk_dev, size, &staging_mem, &staging_mapped);
 
             parser.read_tensor_data(entry.gguf_offset, staging_mapped, size, entry.tensor);
 
@@ -196,12 +207,12 @@ void MemoryManager::load_weights(GGUFParser& parser, const ComputeGraph& graph) 
                            region);
             ctx.endSubmitAndWait(vk_dev, cmd);
 
-            ctx.destroyStagingBuffer(vk_dev, staging_buf, staging_mem, staging_mapped);
-
             entry.tensor->data = block.ptr;
             entry.tensor->offset = block.offset;
             entry.tensor->device_handle = block.device_handle;
         }
+
+        ctx.destroyStagingBuffer(vk_dev, staging_buf, staging_mem, staging_mapped);
     }
 #endif
 #if !defined(BACKEND_CUDA) && !defined(BACKEND_VULKAN)

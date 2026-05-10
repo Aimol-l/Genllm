@@ -1,6 +1,6 @@
 # Genllm
 
-基于 C++23 的模块化 LLM 推理框架，支持 CPU / CUDA 双后端，原生解析 GGUF 格式。
+基于 C++23 的模块化 LLM 推理框架，支持 CPU / CUDA / Vulkan 后端，原生解析 GGUF 格式。
 
 ## 特性
 
@@ -8,7 +8,7 @@
 - **计算图 IR** — 基于 DAG 的可视化计算图，拓扑排序执行，支持 DOT 导出
 - **分页注意力** — 分块 KV cache（PAGE_BLOCK_SIZE=16），支持多设备按层分配
 - **双层内存池** — 权重/激活/KV cache 三池分离，激活池层间复用
-- **自动调度** — 按显存容量自动分配连续层到 CPU/CUDA 设备，跨设备自动插入 copy 边
+- **自动调度** — 按显存容量自动分配连续层到 CPU/GPU 设备，跨设备自动插入 copy 边
 - **RoPE 缓存预计算** — 构建时预计算 cos/sin 表，推理时零拷贝复用
 - **多模型兼容** — 模型工厂注册机制，支持 GQA（不同 head 比例的模型）
 
@@ -26,19 +26,23 @@
 |------|------|-----------|
 | CPU | ✅ 完成 | linear, rms_norm, add/mul, silu, apply_rope, softmax, embedding, attention, reshape, permute, memcpy |
 | CUDA | ✅ 完成 | 同上全部 + paged attention (cuBLAS GEMM) |
+| Vulkan | 🚧 开发中 | add/sub/mul/div (f16/f32/bf16) |
 | SYCL | 🔜 计划 | — |
-| Vulkan | 🔜 计划 | — |
 
-## CUDA 算子实现
+## 构建统一脚本
 
-基于 warp-level 和 cuBLAS 实现，包括：
-- **RMSNorm**: warp reduce (32 threads) 处理每行，支持 3D/4D 输入
-- **Linear**: cublasGemmStridedBatchedEx + 缓存 handle 池
-- **ApplyRoPE**: 每个线程处理 half_dim 对，cos/sin 表从 CPU 预计算后 D2H copy
-- **Paged Attention**: 逐 block 遍历 page table，warp 处理单个 Q position，online softmax
-- **Element-wise**: add/sub/mul/div/silu/gelu/relu 简单 grid-stride 并行
+```bash
+python build.py                        # CPU only (默认)
+python build.py --vulkan               # CPU + Vulkan
+python build.py --cuda                 # CPU + CUDA
+python build.py --sycl                 # CPU + SYCL
+python build.py --vulkan --test -j8    # Vulkan + 测试 + 8 线程
+python build.py --shader               # 仅编译 GLSL shader → SPIR-V → C++ header
+python build.py --rebuild              # 清除 + 全量重建
+python build.py --clean                # 清除构建产物
+```
 
-## 构建
+## CMake 手动构建
 
 ```bash
 # CPU only
@@ -47,6 +51,10 @@ cmake --build build -j
 
 # CPU + CUDA (需要 CUDA Toolkit 13+)
 cmake -B build -DBACKEND_CPU=ON -DBACKEND_CUDA=ON -DBUILD_TEST=ON
+cmake --build build -j
+
+# CPU + Vulkan
+cmake -B build -DBACKEND_CPU=ON -DBACKEND_VULKAN=ON -DBUILD_TEST=ON
 cmake --build build -j
 ```
 
@@ -68,25 +76,34 @@ cmake --build build -j
 ```
 Genllm/
 ├── include/
-│   ├── core/        # tensor, graph, executor, scheduler, manager, kernels
-│   ├── backend/cpu/ # CPU 算子头文件
-│   ├── backend/cuda/# CUDA 算子头文件
-│   ├── model/       # ModelBase, Qwen3, OpFactory (图构建 DSL)
-│   └── utils/       # bfloat16, float16, 类型定义
+│   ├── core/              # tensor, graph, executor, scheduler, manager, kernels
+│   ├── backend/cpu/       # CPU 算子头文件
+│   ├── backend/cuda/      # CUDA 算子头文件
+│   ├── backend/vulkan/    # Vulkan 算子头文件 + SPIR-V 嵌入 (spv/)
+│   ├── model/             # ModelBase, Qwen3, OpFactory (图构建 DSL)
+│   └── utils/             # bfloat16, float16, 类型定义
 ├── src/
-│   ├── core/        # 核心实现 (GGUF 解析, 图, 执行器, 调度器, 分页注意力)
-│   ├── backend/cpu/ # CPU 算子实现
-│   ├── backend/cuda/# CUDA 算子实现 (.cu)
-│   └── model/       # Qwen3 图构建, 模型工厂
-├── tests/           # 测试入口
-├── cmake/           # CMake 包配置
-└── models/          # 模型文件 (.gguf)
+│   ├── core/              # 核心实现 (GGUF 解析, 图, 执行器, 调度器, 分页注意力)
+│   ├── backend/cpu/       # CPU 算子实现
+│   ├── backend/cuda/      # CUDA 算子实现 (.cu)
+│   ├── backend/vulkan/    # Vulkan 算子实现
+│   └── model/             # Qwen3 图构建, 模型工厂
+├── shader/                # GLSL compute shaders
+│   ├── add/               # add_f32.comp, add_bf16.comp, add_f16.comp
+│   ├── sub/               # ...
+│   ├── mul/
+│   └── div/
+├── build.py               # 统一构建脚本
+├── tests/                 # 测试入口
+├── cmake/                 # CMake 包配置
+└── models/                # 模型文件 (.gguf)
 ```
 
 ## 当前限制
 
 - 仅支持 batch=1 推理
 - CUDA 后端需要 `CUDA_LAUNCH_BLOCKING=1` 或 per-tensor `cudaDeviceSynchronize()` 保证激活池复用正确性
+- Vulkan 后端仅有算子骨架，大部分算子尚未实现
 - 仅实现 Qwen3 架构（模型工厂可扩展）
 
 ## License

@@ -67,7 +67,7 @@ void* VulkanMemoryResource::allocate(size_t size, size_t alignment) {
 }
 
 void VulkanMemoryResource::deallocate(void* ptr, size_t size) {
-    // Resources freed in destructor
+    // 资源在析构函数那里释放
 }
 
 #endif // BACKEND_VULKAN

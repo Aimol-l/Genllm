@@ -58,19 +58,19 @@ void VulkanBackendProvider::print_device_info(int device_id) const {
     for (uint32_t i = 0; i < mem_props.memoryHeapCount; ++i) {
         auto heap = mem_props.memoryHeaps[i];
         bool is_device_local = (heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal) != vk::MemoryHeapFlags{};
-        std::println("  Memory Heap[{}]:   {} MB ({})",
+        std::println("  Memory Heap[{}]:    {} MB ({})",
             i, heap.size / (1024 * 1024),
             is_device_local ? "DeviceLocal (VRAM)" : "HostVisible (System RAM)");
     }
-    std::println("  Max Work Group Size:        [{}, {}, {}]",
+    std::println("  Max Work Group Size:    [{}, {}, {}]",
         props.limits.maxComputeWorkGroupSize[0],
         props.limits.maxComputeWorkGroupSize[1],
         props.limits.maxComputeWorkGroupSize[2]);
-    std::println("  Max Work Group Count:        [{}, {}, {}]",
+    std::println("  Max Work Group Count:    [{}, {}, {}]",
         props.limits.maxComputeWorkGroupCount[0],
         props.limits.maxComputeWorkGroupCount[1],
         props.limits.maxComputeWorkGroupCount[2]);
-    std::println("  Max Work Group Invocations:  {}", props.limits.maxComputeWorkGroupInvocations);
+    std::println("  Max Work Group Invocations:    {}", props.limits.maxComputeWorkGroupInvocations);
 }
 
 static struct VulkanBackendProviderRegistrar {

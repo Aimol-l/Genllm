@@ -147,9 +147,9 @@ namespace ops {
         auto* mgr = g_mem_manager->get_attention_manager(out->device,0);
 
         if (mgr && mgr->is_active(out->layer_id)) {
-            FlashAttentionImpl<Device::CPU>::execute(out);
+            FlashAttentionImpl<Device::CPU>::execute(out,dev_id);
         } else {
-            AttentionImpl<Device::CPU>::execute(out);
+            AttentionImpl<Device::CPU>::execute(out,dev_id);
         }
     }
     void cpu_paged_attention(

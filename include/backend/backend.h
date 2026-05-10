@@ -145,7 +145,7 @@ public:
         for (const auto& provider : registry.get_providers()) {
             for (int i = 0; i < provider->get_device_count(); ++i) {
                 auto info = provider->get_backend_info(i);
-                std::print("[{}] {}  Memory: {:.1f} GB", info.id, provider->get_backend_name(),static_cast<double>(info.total_memory) / (1ULL << 30));
+                std::println("[{}] {}  Memory: {:.1f} GB", info.id, provider->get_backend_name(),static_cast<double>(info.total_memory) / (1ULL << 30));
                 provider->print_device_info(i);
             }
         }

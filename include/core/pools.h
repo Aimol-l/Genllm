@@ -4,6 +4,8 @@
 #ifndef __CUDACC__
 #include <print>
 #endif
+#include <iostream>
+#include <format>
 #include "resource.h"
 
 class MemoryPool {
@@ -51,16 +53,16 @@ struct DevicePools {
     std::unique_ptr<MemoryPool> kv_cache;
     void reset_activation() {
         if (activation) {
-            std::println("Reset activation pool on dev {}",activation->format_usage());
+            std::cout<<std::format("Reset activation pool on dev {}",activation->format_usage())<<std::endl;
             activation->reset();
         }
     }
     void print_usage() const {
         if (weight) 
-            std::println("  weight:     {}", weight->format_usage());
+            std::cout<<std::format("  weight:     {}", weight->format_usage())<<std::endl;
         if (activation) 
-            std::println("  activation: {}", activation->format_usage());
+            std::cout<<std::format("  activation: {}", activation->format_usage())<<std::endl;
         if (kv_cache) 
-            std::println("  kv_cache:   {}", kv_cache->format_usage());
+            std::cout<<std::format("  kv_cache:   {}", kv_cache->format_usage())<<std::endl;
     }
 };

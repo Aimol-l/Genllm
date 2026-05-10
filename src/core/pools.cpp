@@ -9,6 +9,7 @@ MemoryPool::MemoryPool(
     , name_(std::move(name))
 {
     if (this->capacity_ > 0) {
+        // 如果是vk后端，这里返回的指针没有意义，应该去使用handle
         this->buffer_ = resource_->allocate(this->capacity_, 256);
     }
 }
