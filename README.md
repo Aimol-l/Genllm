@@ -37,9 +37,22 @@ python build.py --vulkan               # CPU + Vulkan
 python build.py --cuda                 # CPU + CUDA
 python build.py --sycl                 # CPU + SYCL
 python build.py --vulkan --test -j8    # Vulkan + 测试 + 8 线程
-python build.py --shader               # 仅编译 GLSL shader → SPIR-V → C++ header
+python build.py --shader               # 仅编译 GLSL shader → SPIR-V → C++ header,自动查找 ./shader/*/*.comp
 python build.py --rebuild              # 清除 + 全量重建
 python build.py --clean                # 清除构建产物
+```
+
+## Python构建
+```
+# CPU
+python build.py --cpu --test -j$(nproc)
+
+# CPU + CUDA
+python build.py --cuda --test -j$(nproc)
+
+# CPU + Vulkan
+python build.py --vulkan --test -j$(nproc)  # 会自动编译 GLSL shaders
+
 ```
 
 ## CMake 手动构建
@@ -47,15 +60,16 @@ python build.py --clean                # 清除构建产物
 ```bash
 # CPU only
 cmake -B build -DBACKEND_CPU=ON -DBUILD_TEST=ON
-cmake --build build -j
+cmake --build build -j$(nproc)
 
 # CPU + CUDA (需要 CUDA Toolkit 13+)
-cmake -B build -DBACKEND_CPU=ON -DBACKEND_CUDA=ON -DBUILD_TEST=ON
-cmake --build build -j
+cmake -B build -DBACKEND_CUDA=ON -DBUILD_TEST=ON
+cmake --build build -j$(nproc)
 
 # CPU + Vulkan
-cmake -B build -DBACKEND_CPU=ON -DBACKEND_VULKAN=ON -DBUILD_TEST=ON
-cmake --build build -j
+# 需要先使用: python build.py --shader 得到spv文件并嵌入到代码中
+cmake -B build -DBACKEND_VULKAN=ON -DBUILD_TEST=ON
+cmake --build build -j$(nproc)
 ```
 
 ## 运行

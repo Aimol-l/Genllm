@@ -242,7 +242,7 @@ Examples:
         print("[Info] No backend specified, defaulting to CPU only.")
 
     # Shader step (needed for Vulkan)
-    if backends["vulkan"]:
+    if backends.get("vulkan"):
         if not build_shaders():
             sys.exit(1)
 
