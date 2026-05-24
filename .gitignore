@@ -8,13 +8,11 @@ tutorial/
 temp/
 
 
-*.dot
 *.o
 *.so
 *.a
 *.dll
 *.exe
-*.drawio
 
 # IDE
 .vscode/
