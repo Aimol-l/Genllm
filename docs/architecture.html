@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Genllm 架构图</title>
+<style>
+  :root {
+    --bg: #f8f9fc;
+    --card: #ffffff;
+    --border: #e2e6ef;
+    --text: #1e293b;
+    --text2: #64748b;
+    --accent: #6366f1;
+    --accent2: #8b5cf6;
+    --green: #10b981;
+    --blue: #3b82f6;
+    --orange: #f59e0b;
+    --pink: #ec4899;
+    --teal: #14b8a6;
+    --red: #ef4444;
+    --cyan: #06b6d4;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .header {
+    text-align: center;
+    padding: 48px 24px 32px;
+    background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 50%, #fdf4ff 100%);
+    border-bottom: 1px solid var(--border);
+  }
+  .header h1 {
+    font-size: 2.2rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.5px;
+  }
+  .header p {
+    color: var(--text2);
+    font-size: 1.05rem;
+    margin-top: 8px;
+  }
+  .container {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  /* ── 分层架构图 ── */
+  .arch-diagram {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-bottom: 48px;
+  }
+  .layer {
+    position: relative;
+    border: 1.5px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 24px;
+    background: var(--card);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .layer + .layer { margin-top: -1px; border-top-left-radius: 0; border-top-right-radius: 0; }
+  .layer:first-child { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  .layer:last-child  { border-top-left-radius: 0; border-top-right-radius: 0; }
+  .layer-label {
+    position: absolute;
+    top: -11px;
+    left: 20px;
+    background: var(--card);
+    padding: 0 10px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    border-radius: 4px;
+  }
+  .layer-label.l-app    { color: var(--accent); }
+  .layer-label.l-model  { color: var(--accent2); }
+  .layer-label.l-sched  { color: var(--green); }
+  .layer-label.l-mem    { color: var(--blue); }
+  .layer-label.l-kern   { color: var(--orange); }
+  .layer-label.l-back   { color: var(--teal); }
+  .layer-label.l-shader { color: var(--pink); }
+  .layer-label.l-data   { color: var(--red); }
+
+  .boxes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+  }
+  .box {
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    text-align: center;
+    min-width: 100px;
+    transition: transform 0.15s, box-shadow 0.15s;
+    cursor: default;
+  }
+  .box:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  }
+  .box.sub { font-weight: 500; font-size: 0.82rem; opacity: 0.85; }
+
+  /* 颜色变体 */
+  .b-accent  { background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; }
+  .b-purple  { background: #f5f3ff; color: #7c3aed; border: 1px solid #ddd6fe; }
+  .b-green   { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+  .b-blue    { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+  .b-orange  { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
+  .b-teal    { background: #f0fdfa; color: #0d9488; border: 1px solid #99f6e4; }
+  .b-pink    { background: #fdf2f8; color: #db2777; border: 1px solid #fbcfe8; }
+  .b-red     { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+  .b-cyan    { background: #ecfeff; color: #0891b2; border: 1px solid #a5f3fc; }
+  .b-gray    { background: #f8fafc; color: #475569; border: 1px solid #e2e8f0; }
+
+  /* 层间箭头 */
+  .arrow-row {
+    display: flex;
+    justify-content: center;
+    padding: 4px 0;
+  }
+  .arrow-row svg { display: block; }
+
+  /* ── 详细卡片 ── */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: 20px;
+    margin-bottom: 48px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .card h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card h3 .dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .card ul li {
+    padding: 4px 0;
+    font-size: 0.88rem;
+    color: var(--text);
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .card ul li::before {
+    content: '';
+    display: inline-block;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--border);
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .card code {
+    background: #f1f5f9;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.82rem;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent);
+  }
+  .card .desc {
+    color: var(--text2);
+    font-size: 0.82rem;
+  }
+
+  /* ── 数据流 ── */
+  .flow-section { margin-bottom: 48px; }
+  .flow-section h2 {
+    font-size: 1.3rem;
+    font-weight: 700;
+    margin-bottom: 20px;
+  }
+  .flow {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 24px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+  }
+  .flow .step {
+    padding: 10px 18px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 0.88rem;
+    white-space: nowrap;
+  }
+  .flow .arrow {
+    color: var(--text2);
+    font-size: 1.2rem;
+    flex-shrink: 0;
+  }
+
+  /* ── 后端详情 ── */
+  .backend-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 48px;
+  }
+  @media (max-width: 900px) {
+    .backend-grid { grid-template-columns: 1fr; }
+  }
+  .backend-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .backend-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 4px;
+  }
+  .backend-card.cpu::before    { background: linear-gradient(90deg, #6366f1, #818cf8); }
+  .backend-card.cuda::before   { background: linear-gradient(90deg, #10b981, #34d399); }
+  .backend-card.vulkan::before { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+  .backend-card h3 { font-size: 1rem; margin-bottom: 10px; }
+  .backend-card .ops {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .backend-card .op-tag {
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    color: var(--text2);
+  }
+
+  /* ── Shader 表 ── */
+  .shader-map {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 48px;
+  }
+  .shader-map h2 { font-size: 1.3rem; font-weight: 700; margin-bottom: 16px; }
+  .shader-row {
+    display: flex;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 0.85rem;
+  }
+  .shader-row:last-child { border-bottom: none; }
+  .shader-row .op-name {
+    width: 180px;
+    font-weight: 600;
+    color: var(--text);
+    flex-shrink: 0;
+  }
+  .shader-row .variants {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .shader-row .variant {
+    padding: 2px 10px;
+    border-radius: 5px;
+    font-size: 0.78rem;
+    font-weight: 500;
+  }
+  .v-f16  { background: #eef2ff; color: #4338ca; }
+  .v-bf16 { background: #f5f3ff; color: #7c3aed; }
+  .v-f32  { background: #ecfdf5; color: #059669; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Genllm 架构图</h1>
+  <p>多后端 GGUF 大模型推理引擎 &mdash; C++23</p>
+</div>
+
+<div class="container">
+
+<!-- ═══════════════ 分层架构图 ═══════════════ -->
+
+<div class="arch-diagram">
+
+  <!-- 核心数据类型 -->
+  <div class="layer">
+    <span class="layer-label l-data">核心数据类型</span>
+    <div class="boxes">
+      <div class="box b-red"><code>Tensor</code><br><span class="desc">数据指针 · 设备句柄 · 维度[4] · 源节点[5] · 算子参数[4]</span></div>
+      <div class="box b-red sub"><code>Device</code><br>CPU / CUDA / VULKAN / SYCL</div>
+      <div class="box b-red sub"><code>DataType</code><br>F16 / BF16 / F32 / Q4_0 / Q8_0 ...</div>
+      <div class="box b-red sub"><code>OperationType</code><br>30+ 种算子枚举</div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><svg width="20" height="20"><path d="M10 2 L10 14 M5 10 L10 16 L15 10" stroke="#cbd5e1" stroke-width="2" fill="none"/></svg></div>
+
+  <!-- 应用层 -->
+  <div class="layer">
+    <span class="layer-label l-app">应用层</span>
+    <div class="boxes">
+      <div class="box b-accent"><code>GGUFParser</code><br><span class="desc">解析 GGUF 模型权重与元数据</span></div>
+      <div class="box b-accent"><code>Tokenizer</code><br><span class="desc">BPE 分词器 · 编码 / 解码</span></div>
+      <div class="box b-accent"><code>ModelFactory</code><br><span class="desc">根据架构名创建模型实例</span></div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><svg width="20" height="20"><path d="M10 2 L10 14 M5 10 L10 16 L15 10" stroke="#cbd5e1" stroke-width="2" fill="none"/></svg></div>
+
+  <!-- 模型层 -->
+  <div class="layer">
+    <span class="layer-label l-model">模型与计算图</span>
+    <div class="boxes">
+      <div class="box b-purple"><code>Qwen3Model</code><br><span class="desc">全注意力 Transformer</span></div>
+      <div class="box b-purple"><code>Qwen35Model</code><br><span class="desc">混合注意力 + Mamba2</span></div>
+      <div class="box b-purple"><code>OpFactory</code><br><span class="desc">构建计算图节点：线性、归一化、RoPE、注意力 ...</span></div>
+      <div class="box b-purple"><code>ComputeGraph</code><br><span class="desc">Tensor* 有向无环图 · 拓扑排序 · DOT 导出</span></div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><svg width="20" height="20"><path d="M10 2 L10 14 M5 10 L10 16 L15 10" stroke="#cbd5e1" stroke-width="2" fill="none"/></svg></div>
+
+  <!-- 调度层 -->
+  <div class="layer">
+    <span class="layer-label l-sched">调度与执行</span>
+    <div class="boxes">
+      <div class="box b-green"><code>GraphScheduler</code><br><span class="desc">层 → 设备分配 · 内存估算 · 跨设备 Memcpy 插入</span></div>
+      <div class="box b-green"><code>Executor</code><br><span class="desc">预填充 / 解码 / 多轮对话 推理循环</span></div>
+      <div class="box b-green sub"><code>ThreadPool</code><br>线程池</div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><svg width="20" height="20"><path d="M10 2 L10 14 M5 10 L10 16 L15 10" stroke="#cbd5e1" stroke-width="2" fill="none"/></svg></div>
+
+  <!-- 内存层 -->
+  <div class="layer">
+    <span class="layer-label l-mem">内存管理</span>
+    <div class="boxes">
+      <div class="box b-blue"><code>MemoryManager</code><br><span class="desc">每设备三池：权重 / 激活 / KV缓存</span></div>
+      <div class="box b-blue sub"><code>MemoryPool</code><br>线性分配器</div>
+      <div class="box b-blue sub"><code>PagedAttentionMgr</code><br>每层 KV 分页块池</div>
+      <div class="box b-blue sub"><code>BlockPool</code><br>空闲链表分配器</div>
+      <div class="box b-blue sub"><code>IMemoryResource</code><br>抽象内存分配接口</div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><svg width="20" height="20"><path d="M10 2 L10 14 M5 10 L10 16 L15 10" stroke="#cbd5e1" stroke-width="2" fill="none"/></svg></div>
+
+  <!-- 算子分发层 -->
+  <div class="layer">
+    <span class="layer-label l-kern">算子分发</span>
+    <div class="boxes">
+      <div class="box b-orange"><code>kernel::add</code></div>
+      <div class="box b-orange"><code>kernel::linear</code></div>
+      <div class="box b-orange"><code>kernel::rms_norm</code></div>
+      <div class="box b-orange"><code>kernel::layer_norm</code></div>
+      <div class="box b-orange"><code>kernel::rope</code></div>
+      <div class="box b-orange"><code>kernel::silu</code></div>
+      <div class="box b-orange"><code>kernel::gelu</code></div>
+      <div class="box b-orange"><code>kernel::relu</code></div>
+      <div class="box b-orange"><code>kernel::softmax</code></div>
+      <div class="box b-orange"><code>kernel::permute</code></div>
+      <div class="box b-orange"><code>kernel::embedding</code></div>
+      <div class="box b-orange"><code>kernel::paged_attention</code></div>
+      <div class="box b-orange"><code>kernel::flash_attention</code></div>
+      <div class="box b-orange"><code>kernel::memcpy</code></div>
+      <div class="box b-orange sub">... 共 30+ 算子</div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><svg width="20" height="20"><path d="M10 2 L10 14 M5 10 L10 16 L15 10" stroke="#cbd5e1" stroke-width="2" fill="none"/></svg></div>
+
+  <!-- 后端层 -->
+  <div class="layer">
+    <span class="layer-label l-back">后端实现</span>
+    <div class="boxes">
+      <div class="box b-teal"><strong>CPU</strong><br><span class="desc">OpenMP · AVX2 · FMA</span></div>
+      <div class="box b-teal"><strong>CUDA</strong><br><span class="desc">cuBLAS · Warp Shuffle</span></div>
+      <div class="box b-teal"><strong>Vulkan</strong><br><span class="desc">计算着色器 · SPIR-V</span></div>
+      <div class="box b-teal sub"><strong>SYCL</strong><br><span class="desc">Intel oneAPI</span></div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><svg width="20" height="20"><path d="M10 2 L10 14 M5 10 L10 16 L15 10" stroke="#cbd5e1" stroke-width="2" fill="none"/></svg></div>
+
+  <!-- Shader 层 -->
+  <div class="layer">
+    <span class="layer-label l-shader">Vulkan SPIR-V 着色器</span>
+    <div class="boxes">
+      <div class="box b-pink"><code>flash_attn</code><br>f16 · bf16</div>
+      <div class="box b-pink"><code>page_attn</code><br>f16 · bf16</div>
+      <div class="box b-pink"><code>linear</code><br>f16 · bf16 · f32 · gemv</div>
+      <div class="box b-pink"><code>rms_norm</code><br>f16 · bf16 · f32</div>
+      <div class="box b-pink"><code>layer_norm</code><br>f16 · bf16 · f32</div>
+      <div class="box b-pink"><code>rope</code><br>f16 · bf16 · f32</div>
+      <div class="box b-pink sub">+ add / sub / mul / div / silu / gelu / relu / permute</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════ 推理数据流 ═══════════════ -->
+
+<div class="flow-section">
+  <h2>推理数据流</h2>
+  <div class="flow">
+    <div class="step b-accent">GGUF 模型文件</div>
+    <div class="arrow">→</div>
+    <div class="step b-accent">GGUFParser 解析</div>
+    <div class="arrow">→</div>
+    <div class="step b-purple">ModelFactory 创建模型</div>
+    <div class="arrow">→</div>
+    <div class="step b-purple">构建计算图</div>
+    <div class="arrow">→</div>
+    <div class="step b-green">图调度器分配设备</div>
+    <div class="arrow">→</div>
+    <div class="step b-blue">内存管理器分配池</div>
+    <div class="arrow">→</div>
+    <div class="step b-green">执行器推理循环</div>
+    <div class="arrow">→</div>
+    <div class="step b-orange">算子分发</div>
+    <div class="arrow">→</div>
+    <div class="step b-teal">CPU / CUDA / Vulkan</div>
+  </div>
+</div>
+
+<!-- ═══════════════ 后端对比 ═══════════════ -->
+
+<div class="backend-grid">
+  <div class="backend-card cpu">
+    <h3>CPU 后端</h3>
+    <div class="ops">
+      <span class="op-tag">激活函数</span>
+      <span class="op-tag">算术运算</span>
+      <span class="op-tag">注意力</span>
+      <span class="op-tag">词嵌入</span>
+      <span class="op-tag">线性层</span>
+      <span class="op-tag">内存拷贝</span>
+      <span class="op-tag">归一化</span>
+      <span class="op-tag">旋转位置编码</span>
+      <span class="op-tag">形状操作</span>
+    </div>
+  </div>
+  <div class="backend-card cuda">
+    <h3>CUDA 后端</h3>
+    <div class="ops">
+      <span class="op-tag">激活函数</span>
+      <span class="op-tag">算术运算</span>
+      <span class="op-tag">注意力</span>
+      <span class="op-tag">线性层</span>
+      <span class="op-tag">内存拷贝</span>
+      <span class="op-tag">归一化</span>
+      <span class="op-tag">旋转位置编码</span>
+      <span class="op-tag">形状操作</span>
+    </div>
+  </div>
+  <div class="backend-card vulkan">
+    <h3>Vulkan 后端</h3>
+    <div class="ops">
+      <span class="op-tag">激活函数</span>
+      <span class="op-tag">算术运算</span>
+      <span class="op-tag">注意力</span>
+      <span class="op-tag">线性层</span>
+      <span class="op-tag">内存拷贝</span>
+      <span class="op-tag">归一化</span>
+      <span class="op-tag">旋转位置编码</span>
+      <span class="op-tag">形状操作</span>
+      <span class="op-tag">SPIR-V 着色器</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ Shader 算子表 ═══════════════ -->
+
+<div class="shader-map">
+  <h2>Vulkan 着色器算子一览（14 类 · 43 个变体）</h2>
+  <div class="shader-row">
+    <span class="op-name">FlashAttention</span>
+    <span class="variants">
+      <span class="variant v-f16">flash_attn_f16</span>
+      <span class="variant v-bf16">flash_attn_bf16</span>
+    </span>
+  </div>
+  <div class="shader-row">
+    <span class="op-name">PagedAttention</span>
+    <span class="variants">
+      <span class="variant v-f16">page_attn_f16</span>
+      <span class="variant v-bf16">page_attn_bf16</span>
+    </span>
+  </div>
+  <div class="shader-row">
+    <span class="op-name">Linear（线性层）</span>
+    <span class="variants">
+      <span class="variant v-f16">linear_f16</span>
+      <span class="variant v-bf16">linear_bf16</span>
+      <span class="variant v-f32">linear_f32</span>
+      <span class="variant v-f16">linear_gemv_f16</span>
+      <span class="variant v-bf16">linear_gemv_bf16</span>
+      <span class="variant v-f32">linear_gemv_f32</span>
+    </span>
+  </div>
+  <div class="shader-row">
+    <span class="op-name">RMSNorm</span>
+    <span class="variants">
+      <span class="variant v-f16">rms_norm_f16</span>
+      <span class="variant v-bf16">rms_norm_bf16</span>
+      <span class="variant v-f32">rms_norm_f32</span>
+    </span>
+  </div>
+  <div class="shader-row">
+    <span class="op-name">LayerNorm</span>
+    <span class="variants">
+      <span class="variant v-f16">layer_norm_f16</span>
+      <span class="variant v-bf16">layer_norm_bf16</span>
+      <span class="variant v-f32">layer_norm_f32</span>
+    </span>
+  </div>
+  <div class="shader-row">
+    <span class="op-name">RoPE（旋转位置编码）</span>
+    <span class="variants">
+      <span class="variant v-f16">rope_f16</span>
+      <span class="variant v-bf16">rope_bf16</span>
+      <span class="variant v-f32">rope_f32</span>
+    </span>
+  </div>
+  <div class="shader-row">
+    <span class="op-name">Permute（维度重排）</span>
+    <span class="variants">
+      <span class="variant v-f16">permute_f16</span>
+      <span class="variant v-bf16">permute_bf16</span>
+      <span class="variant v-f32">permute_f32</span>
+    </span>
+  </div>
+  <div class="shader-row">
+    <span class="op-name">加 / 减 / 乘 / 除</span>
+    <span class="variants">
+      <span class="variant v-f16">*_f16</span>
+      <span class="variant v-bf16">*_bf16</span>
+      <span class="variant v-f32">*_f32</span>
+    </span>
+  </div>
+  <div class="shader-row">
+    <span class="op-name">SiLU / GELU / ReLU</span>
+    <span class="variants">
+      <span class="variant v-f16">*_f16</span>
+      <span class="variant v-bf16">*_bf16</span>
+      <span class="variant v-f32">*_f32</span>
+    </span>
+  </div>
+</div>
+
+<!-- ═══════════════ 详细卡片 ═══════════════ -->
+
+<div class="grid">
+  <div class="card">
+    <h3><span class="dot" style="background:var(--accent)"></span>计算图</h3>
+    <ul>
+      <li><code>Tensor</code> 节点，最多 5 条源边</li>
+      <li>拓扑排序决定执行顺序</li>
+      <li>按 <code>layer_id</code> 分组管理</li>
+      <li>支持 DOT 格式导出可视化</li>
+      <li>每次前向传播动态解析维度</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="dot" style="background:var(--green)"></span>执行器</h3>
+    <ul>
+      <li><code>prefill(tokens)</code> — 批量预填充，seq_len = N</li>
+      <li><code>decode_step(token)</code> — 单步解码，seq_len = 1</li>
+      <li><code>append_tokens(tokens)</code> — 多轮对话续写</li>
+      <li>遍历计算图，按 dtype / device 分发算子</li>
+      <li>自动插入跨设备内存拷贝</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="dot" style="background:var(--blue)"></span>分页 KV 缓存</h3>
+    <ul>
+      <li>每层一个 <code>PagedAttentionManager</code></li>
+      <li><code>BlockPool</code> 空闲链表，固定大小块</li>
+      <li>每页一个 <code>PageEntry {k_block_id, v_block_id}</code></li>
+      <li><code>append_kv_pages()</code> 将 K/V 散射写入缓存池</li>
+      <li>因果掩码：<code>kv_pos ≤ q_start + q_pos</code></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="dot" style="background:var(--orange)"></span>注意力机制</h3>
+    <ul>
+      <li><code>PagedAttention</code> — 分页 KV 缓存 + 在线 Softmax</li>
+      <li><code>FlashAttention</code> — 连续 Q/K/V + 在线 Softmax</li>
+      <li>支持 GQA：<code>num_kv_groups = n_heads / n_kv_heads</code></li>
+      <li>当前约束 <code>head_dim == 128</code>（着色器优化）</li>
+      <li>Warp / Subgroup 归约计算点积</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="dot" style="background:var(--teal)"></span>Vulkan 管线</h3>
+    <ul>
+      <li><code>VulkanContext</code> 单例 — 设备 + 队列 + 命令池</li>
+      <li>启动时预先创建所有 Pipeline</li>
+      <li><code>registerOp()</code> — 着色器模块 + 管线缓存</li>
+      <li>录制 → 提交 → 等待 → 清理 生命周期</li>
+      <li>延迟释放描述符集以支持批处理</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="dot" style="background:var(--pink)"></span>构建系统</h3>
+    <ul>
+      <li><code>python build.py --shader</code> — GLSL → SPIR-V → C++ 头文件</li>
+      <li><code>python build.py --vulkan</code> — Vulkan 全量构建</li>
+      <li>CMake + Ninja / Unix Makefiles</li>
+      <li>C++23，GCC 15+ / Clang 20+</li>
+      <li>编译期后端开关：<code>BACKEND_CPU / CUDA / VULKAN / SYCL</code></li>
+    </ul>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

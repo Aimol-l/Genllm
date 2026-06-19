@@ -42,13 +42,5 @@ third_party/
 *.bak
 *.backup
 
-# 第三方库（应使用包管理器或子模块）
-include/3rd/
-
-# 文档文件
-docs/*.drawio
-docs/*.html
-docs/*.dot
-
 # 符号链接
 shell/weights
