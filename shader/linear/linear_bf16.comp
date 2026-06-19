@@ -1,0 +1,96 @@
+#version 460
+
+#extension GL_EXT_bfloat16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_ballot : require
+
+const uint TILE = 16;
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform Params {
+    int M;
+    int K;
+    int N;
+} p;
+
+layout(binding = 0) readonly  buffer SrcX { bfloat16_t x[]; };
+layout(binding = 1) readonly  buffer SrcW { bfloat16_t w[]; };
+layout(binding = 2) writeonly buffer Dst  { bfloat16_t dst[]; };
+
+shared bfloat16_t As[TILE][TILE + 1];
+shared bfloat16_t Bs[TILE][TILE + 1];
+shared float Cshared[TILE][TILE];
+
+void main() {
+    uint tile_m = gl_WorkGroupID.y;
+    uint tile_n = gl_WorkGroupID.x;
+    int m_start = int(tile_m * TILE);
+    int n_start = int(tile_n * TILE);
+
+    uint lane = gl_SubgroupInvocationID;
+
+    if (lane == 0u) {
+        for (int i = 0; i < TILE; i++)
+            for (int j = 0; j < TILE; j++)
+                Cshared[i][j] = 0.0;
+    }
+    barrier();
+    coopmat<float, gl_ScopeSubgroup, TILE, TILE, gl_MatrixUseAccumulator> c_mat;
+    coopMatLoad(c_mat, Cshared[0], 0, TILE, gl_CooperativeMatrixLayoutRowMajor);
+
+    int ts = int(TILE);
+    int t_row = int(TILE + 1u);
+    for (int k_start = 0; k_start < p.K; k_start += ts) {
+        for (uint i = 0u; i < 8u; ++i) {
+            uint idx = lane * 8u + i;
+            uint row = idx / TILE;
+            uint col = idx % TILE;
+            int gr = m_start + int(row);
+            int gc = k_start + int(col);
+            if (gr < p.M && gc < p.K) {
+                As[row][col] = x[gr * p.K + gc];
+            } else {
+                As[row][col] = bfloat16_t(0.0);
+            }
+        }
+        barrier();
+
+        for (uint i = 0u; i < 8u; ++i) {
+            uint idx = lane * 8u + i;
+            uint row = idx / TILE;
+            uint col = idx % TILE;
+            int n_row = n_start + int(row);
+            int k_col = k_start + int(col);
+            if (n_row < p.N && k_col < p.K) {
+                Bs[row][col] = w[n_row * p.K + k_col];
+            } else {
+                Bs[row][col] = bfloat16_t(0.0);
+            }
+        }
+        barrier();
+
+        coopmat<bfloat16_t, gl_ScopeSubgroup, TILE, TILE, gl_MatrixUseA> a_mat;
+        coopmat<bfloat16_t, gl_ScopeSubgroup, TILE, TILE, gl_MatrixUseB> b_mat;
+        coopMatLoad(a_mat, As[0], 0, t_row, gl_CooperativeMatrixLayoutRowMajor);
+        coopMatLoad(b_mat, Bs[0], 0, t_row, gl_CooperativeMatrixLayoutColumnMajor);
+
+        c_mat = coopMatMulAdd(a_mat, b_mat, c_mat);
+    }
+
+    coopMatStore(c_mat, Cshared[0], 0, TILE, gl_CooperativeMatrixLayoutRowMajor);
+    barrier();
+
+    for (uint i = 0u; i < 8u; ++i) {
+        uint idx = lane * 8u + i;
+        uint row = idx / TILE;
+        uint col = idx % TILE;
+        int gr = m_start + int(row);
+        int gc = n_start + int(col);
+        if (gr < p.M && gc < p.N) {
+            dst[gr * p.N + gc] = bfloat16_t(Cshared[row][col]);
+        }
+    }
+}

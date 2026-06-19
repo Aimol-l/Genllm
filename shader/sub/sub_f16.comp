@@ -1,0 +1,30 @@
+#version 460
+
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 256) in;
+
+
+layout(push_constant) uniform Params {
+    uint64_t total_elements;
+}params;
+
+layout(std430, binding = 0) readonly buffer Src0 {
+    float16_t src0[];
+};
+layout(std430, binding = 1) readonly buffer Src1 {
+    float16_t src1[];
+};
+layout(std430, binding = 2) writeonly buffer Dst  {
+    float16_t dst[];
+};
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= params.total_elements) 
+        return;
+    dst[idx] = src0[idx] - src1[idx];
+}

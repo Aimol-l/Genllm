@@ -1,0 +1,62 @@
+#version 460
+
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+
+const uint TILE = 16;
+
+layout(local_size_x = TILE, local_size_y = TILE, local_size_z = 1) in;
+
+layout(push_constant) uniform Params {
+    int M;
+    int K;
+    int N;
+} p;
+
+layout(binding = 0) readonly buffer SrcX { float x[]; };
+layout(binding = 1) readonly buffer SrcW { float w[]; };
+layout(binding = 2) buffer       Dst  { float dst[]; };
+
+shared float As[TILE][TILE + 1];
+shared float Bs[TILE][TILE + 1];
+
+void main() {
+    uint tile_m = gl_WorkGroupID.y;
+    uint tile_n = gl_WorkGroupID.x;
+    int m_start = int(tile_m * TILE);
+    int n_start = int(tile_n * TILE);
+
+    uint lr = gl_LocalInvocationID.y;
+    uint lc = gl_LocalInvocationID.x;
+    int row = m_start + int(lr);
+    int col = n_start + int(lc);
+
+    float acc = 0.0;
+
+    for (int k_start = 0; k_start < p.K; k_start += int(TILE)) {
+        int x_r = row;
+        int x_c = k_start + int(lc);
+        As[lr][lc] = (x_r < p.M && x_c < p.K)
+            ? x[x_r * p.K + x_c]
+            : 0.0;
+
+        int k_col = k_start + int(lc);
+        int n_row = n_start + int(lr);
+        // w[N,K], 位置 w[n_row][k_col]
+        Bs[lr][lc] = (n_row < p.N && k_col < p.K)
+            ? w[n_row * p.K + k_col]
+            : 0.0;
+
+        barrier();
+        memoryBarrierShared();
+
+        for (uint k = 0u; k < TILE; ++k) {
+            acc += As[lr][k] * Bs[lc][k];
+        }
+
+        barrier();
+    }
+
+    if (row < p.M && col < p.N) {
+        dst[row * p.N + col] = acc;
+    }
+}

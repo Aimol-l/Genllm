@@ -1,0 +1,36 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_shuffle_relative : require
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    int M;
+    int K;
+    int N;
+} p;
+
+layout(std430, binding = 0) readonly buffer SrcX { float16_t x[]; };
+layout(std430, binding = 1) readonly buffer SrcW { float16_t w[]; };
+layout(std430, binding = 2) writeonly buffer Dst  { float16_t dst[]; };
+
+void main() {
+    uint warp = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint n = gl_WorkGroupID.x * (gl_WorkGroupSize.x / gl_SubgroupSize) + warp;
+    if (n >= uint(p.N)) return;
+
+    float sum = 0.0;
+    for (int k = int(lane); k < p.K; k += int(gl_SubgroupSize)) {
+        sum += float(x[k]) * float(w[n * uint(p.K) + uint(k)]);
+    }
+
+    for (uint offset = 16; offset > 0; offset >>= 1)
+        sum += subgroupShuffleDown(sum, offset);
+
+    if (lane == 0)
+        dst[n] = float16_t(sum);
+}

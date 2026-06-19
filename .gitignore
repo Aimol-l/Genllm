@@ -1,0 +1,54 @@
+# 构建输出
+bin/
+build/
+dist/
+models/
+weights/
+shell/__pycache__/
+tutorial/
+temp/
+dump/
+
+*.o
+*.so
+*.a
+*.dll
+*.exe
+
+# IDE
+.vscode/
+.claude/
+.cache/
+
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 日志和临时文件
+*.log
+*.tmp
+*.temp
+
+# 依赖目录
+deps/
+third_party/
+
+# 备份文件
+*.bak
+*.backup
+
+# 第三方库（应使用包管理器或子模块）
+include/3rd/
+
+# 文档文件
+docs/*.drawio
+docs/*.html
+docs/*.dot
+
+# 符号链接
+shell/weights

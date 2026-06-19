@@ -1,0 +1,70 @@
+#version 460
+
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_shuffle_relative : enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    int rows;
+    int hidden_size;
+    float eps;
+    int has_bias;
+} params;
+
+layout(std430, binding = 0) readonly buffer Src0 {
+    float16_t input_x[];
+};
+layout(std430, binding = 1) readonly buffer Src1 {
+    float weight[];
+};
+layout(std430, binding = 2) readonly buffer Src2 {
+    float bias[];
+};
+layout(std430, binding = 3) writeonly buffer Dst {
+    float16_t dst_data[];
+};
+
+void main() {
+    uint warp_id = gl_SubgroupID;
+    uint lane_id = gl_SubgroupInvocationID;
+
+    uint row = gl_WorkGroupID.x * (gl_WorkGroupSize.x / gl_SubgroupSize) + warp_id;
+    if (row >= uint(params.rows)) return;
+
+    int row_offset = int(row) * params.hidden_size;
+
+    // Pass 1: compute mean
+    float sum = 0.0;
+    for (int i = int(lane_id); i < params.hidden_size; i += int(gl_SubgroupSize)) {
+        sum += float(input_x[row_offset + i]);
+    }
+    #pragma unroll
+    for (uint offset = gl_SubgroupSize / 2; offset > 0; offset /= 2) {
+        sum += subgroupShuffleDown(sum, offset);
+    }
+    float mean = subgroupBroadcast(sum, 0) / float(params.hidden_size);
+
+    // Pass 2: compute variance
+    float var_sum = 0.0;
+    for (int i = int(lane_id); i < params.hidden_size; i += int(gl_SubgroupSize)) {
+        float v = float(input_x[row_offset + i]) - mean;
+        var_sum += v * v;
+    }
+    #pragma unroll
+    for (uint offset = gl_SubgroupSize / 2; offset > 0; offset /= 2) {
+        var_sum += subgroupShuffleDown(var_sum, offset);
+    }
+    float inv_std = inversesqrt(subgroupBroadcast(var_sum, 0) / float(params.hidden_size) + params.eps);
+
+    // Pass 3: normalize + scale + optional bias
+    for (int i = int(lane_id); i < params.hidden_size; i += int(gl_SubgroupSize)) {
+        float o = (float(input_x[row_offset + i]) - mean) * inv_std * weight[i];
+        if (params.has_bias != 0) o += bias[i];
+        dst_data[row_offset + i] = float16_t(o);
+    }
+}

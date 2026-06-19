@@ -1,0 +1,40 @@
+#version 460
+
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+#extension GL_EXT_bfloat16 : enable
+
+const int MAX_DIM = 4;
+
+layout(local_size_x = 256, local_size_y = 1) in;
+
+layout(push_constant) uniform Params {
+    int ndim;
+    int total;
+    int out_strides[MAX_DIM];
+    int src_strides[MAX_DIM];
+    int perm[MAX_DIM];
+} p;
+
+layout(std430, binding = 0) readonly buffer Src { bfloat16_t src_data[]; };
+layout(std430, binding = 1) writeonly buffer Dst { bfloat16_t dst_data[]; };
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    uint stride = gl_WorkGroupSize.x * gl_NumWorkGroups.x;
+
+    for (int idx = int(tid); idx < p.total; idx += int(stride)) {
+        int rem = idx;
+        int c[MAX_DIM];
+        for (int d = 0; d < p.ndim; d++) {
+            c[d] = rem / p.out_strides[d];
+            rem = rem % p.out_strides[d];
+        }
+
+        int si = 0;
+        for (int d = 0; d < p.ndim; d++) {
+            si += c[d] * p.src_strides[p.perm[d]];
+        }
+
+        dst_data[idx] = src_data[si];
+    }
+}

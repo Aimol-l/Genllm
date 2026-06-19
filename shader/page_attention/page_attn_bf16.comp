@@ -1,0 +1,104 @@
+#version 460
+
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_bfloat16 : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_shuffle_relative : require
+
+const int HD = 128;
+const int VEC = HD / 32;
+const int WARPS = 4;
+const int BLK = 16;
+
+layout(local_size_x = 128, local_size_y = 1) in;
+
+layout(push_constant) uniform P {
+    int32_t batch;
+    int32_t seq_len;
+    int32_t num_q_heads;
+    int32_t num_kv_heads;
+    int32_t total_cached;
+    int32_t num_blocks;
+    int32_t num_kv_groups;
+    int32_t head_dim;
+    int32_t block_stride_elems;
+    int32_t q_start;
+    float   scale;      // = 1.0f / sqrtf(head_dim)
+} p;
+
+
+layout(std430, binding = 0) readonly buffer Qbuf  { bfloat16_t Q[]; };
+layout(std430, binding = 1) writeonly buffer Obuf  { bfloat16_t O[]; };
+layout(std430, binding = 2) readonly buffer PageK { int k_ids[]; };
+layout(std430, binding = 3) readonly buffer PageV { int v_ids[]; };
+layout(std430, binding = 4) readonly buffer Kpool { bfloat16_t kp[]; };
+layout(std430, binding = 5) readonly buffer Vpool { bfloat16_t vp[]; };
+
+void main() {
+    int lane = int(gl_SubgroupInvocationID);
+    int warp = int(gl_SubgroupID);
+    uint bh  = warp + gl_WorkGroupID.x * WARPS;
+    if (bh >= p.batch * p.num_q_heads) return;
+
+    int hi  = int(bh) % p.num_q_heads;
+    int bi  = int(bh) / p.num_q_heads;
+    int kvi = hi / p.num_kv_groups;
+    int qp  = int(gl_WorkGroupID.y);
+
+    int q_base = (bi * p.num_q_heads  + hi) * p.seq_len * p.head_dim;
+
+    float qr[VEC];
+    for (int i = 0; i < VEC; i++) {
+        qr[i] = float(Q[q_base + qp * p.head_dim + (lane + i * 32)]);
+    }
+
+    float m = -1.0 / 0.0;
+    float l = 0.0;
+    float or_[VEC] = float[VEC](0.0, 0.0, 0.0, 0.0);
+
+    for (int blk = 0; blk < p.num_blocks; blk++) {
+        int k_bid = k_ids[blk];
+        int v_bid = v_ids[blk];
+        if (k_bid < 0 || v_bid < 0) break;
+
+        int blk_start = blk * BLK;
+        int blk_end   = min(blk_start + BLK, p.total_cached);
+        int kv_off_base = k_bid * p.block_stride_elems + kvi * p.head_dim;
+        int vv_off_base = v_bid * p.block_stride_elems + kvi * p.head_dim;
+
+        for (int pos = 0; pos < blk_end - blk_start; pos++) {
+            int kv_pos = blk_start + pos;
+            if (kv_pos > p.q_start + qp) break;
+
+            int off = kv_off_base + pos * p.num_kv_heads * p.head_dim;
+            int v_off = vv_off_base + pos * p.num_kv_heads * p.head_dim;
+
+            float s = 0.0;
+            for (int i = 0; i < VEC; i++) {
+                s += qr[i] * float(kp[off + (lane + i * 32)]);
+            }
+            s = subgroupShuffleDown(s, 16) + s;
+            s = subgroupShuffleDown(s, 8)  + s;
+            s = subgroupShuffleDown(s, 4)  + s;
+            s = subgroupShuffleDown(s, 2)  + s;
+            s = subgroupShuffleDown(s, 1)  + s;
+            s = subgroupShuffle(s, 0) * p.scale;
+
+            float mn = max(m, s);
+            float es = exp(s - mn);
+            float ep = exp(m - mn);
+
+            for (int i = 0; i < VEC; i++) {
+                or_[i] = or_[i] * ep + es * float(vp[v_off + (lane + i * 32)]);
+            }
+            l = l * ep + es;
+            m = mn;
+        }
+    }
+
+    float inv_l = 1.0 / l;
+    for (int i = 0; i < VEC; i++) {
+        O[q_base + qp * p.head_dim + (lane + i * 32)] = bfloat16_t(or_[i] * inv_l);
+    }
+}

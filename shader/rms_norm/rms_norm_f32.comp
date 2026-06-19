@@ -1,0 +1,60 @@
+#version 460
+
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_ballot : enable
+#extension GL_KHR_shader_subgroup_shuffle_relative : enable
+             // 提供 subgroupShuffleDown 等
+#extension GL_EXT_shader_explicit_arithmetic_types : enable    // 提供 float16_t 等显式算术类型
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+
+layout(local_size_x = 256) in;   // 每个 workgroup 256 个线程，假设 subgroupSize=32，则有 8 个 subgroup
+
+layout(push_constant) uniform Params {
+    int rows;
+    int hidden_size;
+    float eps;
+} params;
+
+layout(std430, binding = 0) readonly buffer Src0 { 
+    float input_x[];   // 输入 x，半精度 float [rows, hidden_size]
+};
+layout(std430, binding = 1) readonly buffer Src1 { 
+    float weight[];        // 权重仍是 float [hidden_size]
+};
+layout(std430, binding = 2) writeonly buffer Dst {
+    float dst_data[];    // 输出 output，半精度 float [rows, hidden_size]
+};
+
+void main() {
+    uint warp_id = gl_SubgroupID;
+    uint lane_id = gl_SubgroupInvocationID;
+
+    uint row = gl_WorkGroupID.x * (gl_WorkGroupSize.x / gl_SubgroupSize) + warp_id;
+    if (row >= uint(params.rows)) return;
+
+    int row_offset = int(row) * params.hidden_size;
+
+    // Step 1: 计算 sum(x^2)，内部用 float 累加避免精度损失
+    float sum = 0.0;
+    for (int i = int(lane_id); i < params.hidden_size; i += int(gl_SubgroupSize)) {
+        float v = float(input_x[row_offset + i]);
+        sum += v * v;
+    }
+
+    // Subgroup 规约（等同于 warp reduce）
+    #pragma unroll
+    for (uint offset = gl_SubgroupSize / 2; offset > 0; offset /= 2) {
+        sum += subgroupShuffleDown(sum, offset);
+    }
+
+    float total_sum = subgroupBroadcast(sum, 0);
+    float mean_sq   = total_sum / float(params.hidden_size);
+    float inv_rms   = inversesqrt(mean_sq + params.eps);
+
+    // Step 2: normalize + scale
+    for (int i = int(lane_id); i < params.hidden_size; i += int(gl_SubgroupSize)) {
+        float v = float(input_x[row_offset + i]);
+        float o = v * inv_rms * weight[i];
+        dst_data[row_offset + i] = float(o);    // 写回半精度
+    }
+}

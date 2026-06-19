@@ -1,0 +1,47 @@
+#version 460
+
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    int head_dim;
+    int half_dim;
+    int seq_len;
+    int start_pos;
+    int n_heads;
+    int B;
+} params;
+
+layout(std430, binding = 0) readonly buffer Src0 { float input_x[]; };
+layout(std430, binding = 1) readonly buffer Src1 { float cos_cache[]; };
+layout(std430, binding = 2) readonly buffer Src2 { float sin_cache[]; };
+layout(std430, binding = 3) writeonly buffer Dst { float dst_data[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint stride = gl_WorkGroupSize.x * gl_NumWorkGroups.x;
+    int n_pairs = params.B * params.n_heads * params.seq_len * params.half_dim;
+
+    int batch_stride = params.n_heads * params.seq_len * params.head_dim;
+    int head_stride = params.seq_len * params.head_dim;
+
+    for (int p = int(idx); p < n_pairs; p += int(stride)) {
+        int i = p % params.half_dim;
+        int s = (p / params.half_dim) % params.seq_len;
+        int h = (p / (params.half_dim * params.seq_len)) % params.n_heads;
+        int b = p / (params.half_dim * params.seq_len * params.n_heads);
+
+        int pos = params.start_pos + s;
+        int offset = b * batch_stride + h * head_stride + s * params.head_dim;
+
+        float x0 = float(input_x[offset + i]);
+        float x1 = float(input_x[offset + i + params.half_dim]);
+        float c  = cos_cache[pos * params.head_dim + i];
+        float si = sin_cache[pos * params.head_dim + i];
+
+        dst_data[offset + i]                  = x0 * c - x1 * si;
+        dst_data[offset + i + params.half_dim] = x0 * si + x1 * c;
+    }
+}
