@@ -1,0 +1,70 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "cpu-release",
+      "displayName": "CPU Release",
+      "description": "CPU-only Release build using the configured C++ toolchain and Ninja.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cpu-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BACKEND_CPU": "ON",
+        "BACKEND_CUDA": "OFF",
+        "BACKEND_SYCL": "OFF",
+        "BACKEND_VULKAN": "OFF",
+        "GENLLM_BUILD_SHARED": "OFF",
+        "BUILD_TEST": "ON"
+      }
+    },
+    {
+      "name": "cpu-debug",
+      "displayName": "CPU Debug",
+      "description": "CPU-only Debug build using the configured C++ toolchain and Ninja.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cpu-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BACKEND_CPU": "ON",
+        "BACKEND_CUDA": "OFF",
+        "BACKEND_SYCL": "OFF",
+        "BACKEND_VULKAN": "OFF",
+        "GENLLM_BUILD_SHARED": "OFF",
+        "BUILD_TEST": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "cpu-release",
+      "configurePreset": "cpu-release"
+    },
+    {
+      "name": "cpu-debug",
+      "configurePreset": "cpu-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "cpu-release",
+      "configurePreset": "cpu-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "cpu-debug",
+      "configurePreset": "cpu-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

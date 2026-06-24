@@ -76,6 +76,29 @@ Genllm 识别到 CPU 设备，并把全部层分配到 CPU：
 
 这说明 Genllm 的 GGUF 解析、图构建、CPU 调度、KV cache 和完整 decode 链路已经可运行；当前主要问题不是功能缺失，而是 CPU 内核和 benchmark 口径还没有达到成熟推理库的水平。
 
+## 本次 CPU-only 跑通前的问题和修复
+
+本次测试前，CPU-only 路径有几个阻塞点：
+
+- `CMakeLists.txt` 在 `project()` 中声明了 `LANGUAGES C CXX CUDA`，即使只启用 CPU 后端，也会强制 CMake 查找和启用 CUDA 编译器。
+- 项目名写作 `gnellm`，安装导出的 CMake package 变量和 alias 也不一致，不利于后续作为库复用。
+- `build.py` 原先在单一 `build` 目录内配置不同后端，CPU/Vulkan/CUDA 配置容易互相污染。
+- Windows/MSYS2 下 C++23、OpenMP、`stdc++exp`、CMake module scanning 和日志时间函数需要更明确的编译/平台处理。
+- Qwen3-0.6B IQ4_NL 权重需要 CPU 端识别 `IQ4_NL` block size，并补齐 embedding 和 linear 的基础执行路径。
+
+对应改动：
+
+- 将 CMake project language 改为 `C CXX`，仅在 `BACKEND_CUDA=ON` 时调用 `enable_language(CUDA)` 和 `find_package(CUDAToolkit)`。
+- 新增 `CMakePresets.json`，提供 `cpu-release` / `cpu-debug`，明确关闭 CUDA/SYCL/Vulkan。
+- 将 CPU 编译参数收敛到 `GENLLM_CPU_COMPILE_OPTIONS`，并同时应用到库和测试目标。
+- 默认构建静态库，保留 `GENLLM_BUILD_SHARED` 作为可选共享库开关。
+- 修正 `Genllm::genllm` alias 与 `cmake/Genllm.cmake.in` 导出变量。
+- 在 `build.py` 中按后端选择独立构建目录，例如 `build/cpu-release`，并使用 `cmake -S/-B` 显式配置。
+- 为 `IQ4_NL` 增加 block 定义、大小估算、反量化辅助函数、CPU embedding 路径和 CPU linear 路径。
+- 为 `BackendRegistry` 和 `ModelFactory` 增加兜底初始化，避免静态注册顺序导致 CPU provider 或模型 registry 为空。
+
+这些改动使 `cmake --preset cpu-release && cmake --build --preset cpu-release` 可以在没有 CUDA 参与的情况下生成 CPU 测试入口，并完成 Qwen3-0.6B IQ4_NL 的 CPU-only benchmark。
+
 ## 当前瓶颈分析
 
 ### 1. Quantized linear/GEMV 是最大瓶颈

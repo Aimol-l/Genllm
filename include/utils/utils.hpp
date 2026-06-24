@@ -173,7 +173,9 @@ inline double data_type_size(DataType dtype) noexcept {
         case DataType::GGML_TYPE_Q6_K:    return 210.0 / 256.0; // 0.8203125
         case DataType::GGML_TYPE_Q8_K:    return 258.0 / 256.0; // 1.0078125
 
-        // IQ types (尺寸复杂，此处省略精确值)
+        case DataType::GGML_TYPE_IQ4_NL:  return 18.0 / 32.0;
+
+        // Other IQ types need per-format block-size support before execution.
         default: return 0.0f;
     }
 }

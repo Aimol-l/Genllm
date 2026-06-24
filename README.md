@@ -45,7 +45,7 @@
 ## 构建统一脚本
 
 ```bash
-python build.py                        # CPU only (默认)
+python build.py --cpu --test           # CPU only, 生成 CLI/测试入口
 python build.py --vulkan               # CPU + Vulkan
 python build.py --cuda                 # CPU + CUDA
 python build.py --sycl                 # CPU + SYCL
@@ -72,8 +72,8 @@ python build.py --vulkan --test -j$(nproc)  # 会自动编译 GLSL shaders
 
 ```bash
 # CPU only
-cmake -B build -DBACKEND_CPU=ON -DBUILD_TEST=ON
-cmake --build build -j$(nproc)
+cmake --preset cpu-release
+cmake --build --preset cpu-release
 
 # CPU + CUDA (需要 CUDA Toolkit 13+)
 cmake -B build -DBACKEND_CUDA=ON -DBUILD_TEST=ON
@@ -88,9 +88,11 @@ cmake --build build -j$(nproc)
 ## 运行
 
 ```bash
-# 修改 tests/main.cpp 中的模型路径和 prompt
-# 然后运行
-./build/bin/main
+# 推荐使用 CLI 入口，不需要修改源码
+./build/cpu-release/bin/genllm-cli.exe -m weights/Qwen3-0.6B-BF16.gguf -p "中国首都是哪里？" -n 128
+
+# 也可以运行 tests/main.cpp 对应的固定入口
+./build/cpu-release/bin/main.exe
 ```
 
 关键配置（`tests/main.cpp`）：

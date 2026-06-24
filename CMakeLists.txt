@@ -8,8 +8,9 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
-set(THIS_PROJECT_NAME "gnellm")
+set(THIS_PROJECT_NAME "genllm")
 
 option(BUILD_TEST      "build test file with ./tests/*.cpp" OFF)
 
@@ -17,6 +18,7 @@ option(BACKEND_CPU     "Enable CPU backend" OFF)
 option(BACKEND_CUDA    "Enable CUDA backend" OFF)
 option(BACKEND_SYCL    "Enable SYCL backend" OFF)
 option(BACKEND_VULKAN  "Enable Vulkan backend" OFF)
+option(GENLLM_BUILD_SHARED "Build genllm as a shared library" OFF)
 
 # 检查是否启用了至少一个后端
 if(NOT BACKEND_CPU AND NOT BACKEND_CUDA AND NOT BACKEND_SYCL AND NOT BACKEND_VULKAN)
@@ -28,16 +30,17 @@ endif()
 
 project(
     ${THIS_PROJECT_NAME}
-    LANGUAGES C CXX CUDA
+    LANGUAGES C CXX
     DESCRIPTION "gguf inference tool"
     VERSION 0.1.0
 )
 
+set(GENLLM_CPU_COMPILE_OPTIONS -g -mavx2 -mf16c -mfma -fopenmp)
+
 # CPU配置，avx2，openmp,fma
 if(BACKEND_CPU)
-    find_package(OpenMP REQUIRED)
+    find_package(OpenMP REQUIRED COMPONENTS CXX)
     add_definitions(-DBACKEND_CPU)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -mavx2 -mf16c -mfma -fopenmp ")
 endif()
 
 # cuda配置,avx2,openmp,fma
@@ -51,15 +54,13 @@ if(BACKEND_CUDA)
     find_package(CUDAToolkit REQUIRED)
 
     set(CMAKE_CUDA_ARCHITECTURES "native")  # 常见现代GPU架构
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -mavx2 -mf16c -mfma -fopenmp ")
 endif()
 
 # vk配置,avx2,openmp,fma
 if(BACKEND_VULKAN)
     add_definitions(-DBACKEND_VULKAN)
     find_package(Vulkan REQUIRED)
-    find_package(OpenMP REQUIRED)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -mavx2 -mf16c -mfma -fopenmp ")
+    find_package(OpenMP REQUIRED COMPONENTS CXX)
 endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
@@ -131,15 +132,28 @@ if(BACKEND_VULKAN)
 endif()
 
 # ------------------------- 主库构建 -------------------------
-add_library(${PROJECT_NAME} SHARED ${SRC_FILES})
+set(GENLLM_LIBRARY_TYPE STATIC)
+if(GENLLM_BUILD_SHARED)
+    set(GENLLM_LIBRARY_TYPE SHARED)
+endif()
+
+add_library(${PROJECT_NAME} ${GENLLM_LIBRARY_TYPE} ${SRC_FILES})
 
 # 设置库的属性
 set_target_properties(${PROJECT_NAME} PROPERTIES
     CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON
+    CXX_SCAN_FOR_MODULES OFF
+    WINDOWS_EXPORT_ALL_SYMBOLS ON
 )
 
+target_compile_options(${PROJECT_NAME} PRIVATE ${GENLLM_CPU_COMPILE_OPTIONS})
+
 # 链接库
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_libraries(${PROJECT_NAME} PRIVATE stdc++exp)
+endif()
+
 if(BACKEND_CPU AND OpenMP_CXX_FOUND)
     target_link_libraries(${PROJECT_NAME} PRIVATE OpenMP::OpenMP_CXX)
 endif()
@@ -159,6 +173,7 @@ if(BACKEND_VULKAN AND Vulkan_FOUND)
 endif()
 
 # 设置库的别名
+add_library(Genllm::genllm ALIAS ${PROJECT_NAME})
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 
 # ------------------------- 安装配置 -------------------------
@@ -267,6 +282,10 @@ if(BUILD_TEST)
         add_executable(${test_name} ${test_file})
         target_link_libraries(${test_name} PRIVATE ${PROJECT_NAME})
         target_include_directories(${test_name} PRIVATE ${INCLUDE_DIRS})
+        target_compile_options(${test_name} PRIVATE ${GENLLM_CPU_COMPILE_OPTIONS})
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            target_link_libraries(${test_name} PRIVATE stdc++exp)
+        endif()
         # 为测试目标添加后端定义
         if(BACKEND_CPU)
            target_link_libraries(${test_name} PRIVATE OpenMP::OpenMP_CXX)
@@ -285,5 +304,3 @@ if(BUILD_TEST)
         add_test(NAME ${test_name} COMMAND ${test_name})
     endforeach()
 endif()
-
-
