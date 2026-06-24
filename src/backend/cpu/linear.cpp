@@ -413,6 +413,71 @@ void linear(
         }
     }
 }
+
+template <typename T>
+void linear(
+    bfloat16_t* __restrict__ out,
+    const bfloat16_t* __restrict__ x,          // [M, K]
+    const Block_IQ4_NL* __restrict__ w,        // [N * (K/32)]
+    int64_t M, int64_t K, int64_t N,
+    const bfloat16_t* __restrict__ bias        // [N], optional
+) {
+    constexpr int64_t BM = 8;
+    constexpr int64_t BN = 8;
+    constexpr int64_t BK = QK4_NL;
+    const int64_t blocks_per_row = K / BK;
+
+    for (int64_t i = 0; i < M; ++i) {
+        if (bias) std::copy_n(bias, N, out + i * N);
+        else      std::fill_n(out + i * N, N, bfloat16_t(0.0f));
+    }
+
+    auto compute_block = [&](int64_t ii, int64_t mb, int64_t jj, int64_t nb) {
+        float temp[BM][BN] = {{0.0f}};
+        for (int64_t sb = 0; sb < blocks_per_row; ++sb) {
+            alignas(32) bfloat16_t w_buf[BN][BK];
+            for (int64_t c = 0; c < nb; ++c)
+                quant::dequantize_row_iq4_nl(w + (jj + c) * blocks_per_row + sb, w_buf[c], BK);
+            for (int64_t r = 0; r < mb; ++r) {
+                const bfloat16_t* x_ptr = x + (ii + r) * K + sb * BK;
+                for (int64_t c = 0; c < nb; ++c) {
+                    const bfloat16_t* w_ptr = w_buf[c];
+                    __m256 s0 = _mm256_setzero_ps(), s1 = _mm256_setzero_ps();
+                    for (int64_t k = 0; k < BK; k += 16) {
+                        __m256 xv0 = load_bf16x8_f32(x_ptr + k);
+                        __m256 xv1 = load_bf16x8_f32(x_ptr + k + 8);
+                        __m256 wv0 = load_bf16x8_f32(w_ptr + k);
+                        __m256 wv1 = load_bf16x8_f32(w_ptr + k + 8);
+                        s0 = _mm256_fmadd_ps(xv0, wv0, s0);
+                        s1 = _mm256_fmadd_ps(xv1, wv1, s1);
+                    }
+                    temp[r][c] += hsum_ps(_mm256_add_ps(s0, s1));
+                }
+            }
+        }
+        for (int64_t r = 0; r < mb; ++r)
+            for (int64_t c = 0; c < nb; ++c) {
+                float old = float(out[(ii + r) * N + (jj + c)]);
+                out[(ii + r) * N + (jj + c)] = bfloat16_t(old + temp[r][c]);
+            }
+    };
+
+    if (M >= BM * 2) {
+        #pragma omp parallel for schedule(static)
+        for (int64_t ii = 0; ii < M; ii += BM) {
+            const int64_t mb = std::min(BM, M - ii);
+            for (int64_t jj = 0; jj < N; jj += BN)
+                compute_block(ii, mb, jj, std::min(BN, N - jj));
+        }
+    } else {
+        for (int64_t ii = 0; ii < M; ii += BM) {
+            const int64_t mb = std::min(BM, M - ii);
+            #pragma omp parallel for schedule(static)
+            for (int64_t jj = 0; jj < N; jj += BN)
+                compute_block(ii, mb, jj, std::min(BN, N - jj));
+        }
+    }
+}
 template <typename T> requires std::is_same_v<T, bfloat16_t> || std::is_same_v<T, float> || std::is_same_v<T, float16_t>
 void matmul(
     T* out,
@@ -459,8 +524,11 @@ namespace ops {
             case DataType::GGML_TYPE_Q6_K:{
                 linear<Block_Q6_K>(static_cast<bfloat16_t*>(out->data),static_cast<const bfloat16_t*>(x->data),static_cast<const Block_Q6_K*>(w->data), M, K, N, bias_ptr);break;
             }
+            case DataType::GGML_TYPE_IQ4_NL:{
+                linear<Block_IQ4_NL>(static_cast<bfloat16_t*>(out->data),static_cast<const bfloat16_t*>(x->data),static_cast<const Block_IQ4_NL*>(w->data), M, K, N, bias_ptr);break;
+            }
             default: 
-                throw std::runtime_error(std::format("linear: unsupported dtype {}", data_type_to_string(out->dtype)));
+                throw std::runtime_error(std::format("linear: unsupported dtype {}", data_type_to_string(w->dtype)));
         }
         // tensor_dump::dump_tensor_npy(x,"dump/linear_x.npy");
         // tensor_dump::dump_tensor_npy(w,"dump/linear_weight.npy");

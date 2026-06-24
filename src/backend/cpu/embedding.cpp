@@ -64,6 +64,25 @@ void embedding(
         quant::dequantize_row_q6_K(row_blocks,dst,hidden);
     }
 }
+void embedding(
+    bfloat16_t* out,
+    const Block_IQ4_NL* weight,
+    const int32_t* ids,
+    int64_t seq_len,
+    int64_t hidden,
+    int64_t vocab
+){
+    int64_t blocks_per_row = hidden / QK4_NL;
+    for (int64_t s = 0; s < seq_len; ++s) {
+        int32_t id = ids[s];
+        if (id < 0 || id >= vocab) {
+            throw std::runtime_error(std::format("cpu::embedding: token id {} out of range [0, {})", id, vocab));
+        }
+        bfloat16_t* dst = out + s * hidden;
+        const Block_IQ4_NL* row_blocks = weight + id * blocks_per_row;
+        quant::dequantize_row_iq4_nl(row_blocks, dst, hidden);
+    }
+}
 void EmbeddingImpl<Device::CPU>::execute(Tensor* out, int32_t dev_id) {
     const Tensor* input_ids = out->src[0]; // int32_t
     const Tensor* weight    = out->src[1]; // bfloat16_t,Q4_K_M
@@ -90,6 +109,8 @@ void EmbeddingImpl<Device::CPU>::execute(Tensor* out, int32_t dev_id) {
             embedding(static_cast<bfloat16_t*>(out->data),static_cast<const Block_Q4_K*>(weight->data),ids,seq,hidden,vocab);break;
         case DataType::GGML_TYPE_Q6_K:
             embedding(static_cast<bfloat16_t*>(out->data),static_cast<const Block_Q6_K*>(weight->data),ids,seq,hidden,vocab);break;
+        case DataType::GGML_TYPE_IQ4_NL:
+            embedding(static_cast<bfloat16_t*>(out->data),static_cast<const Block_IQ4_NL*>(weight->data),ids,seq,hidden,vocab);break;
         default: 
             throw std::runtime_error(std::format("embedding: unsupported dtype {}", data_type_to_string(weight->dtype)));
     }

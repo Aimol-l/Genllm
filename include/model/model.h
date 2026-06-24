@@ -50,6 +50,9 @@ public:
 
     // 根据架构名称创建模型
     [[nodiscard]] static std::unique_ptr<ModelBase> CreateFromArch(const std::string& arch_name) {
+        if (s_registry.empty()) {
+            init();
+        }
         auto it = s_registry.find(arch_name);
         if (it == s_registry.end()) {
             throw std::runtime_error(std::format("Unsupported model architecture: {}", arch_name));

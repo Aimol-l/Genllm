@@ -22,9 +22,9 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT   = Path(__file__).resolve().parent
-BUILD_DIR      = PROJECT_ROOT / "build"
+BUILD_ROOT     = PROJECT_ROOT / "build"
 SHADER_DIR     = PROJECT_ROOT / "shader"
-SPV_DIR        = BUILD_DIR / "spv"
+SPV_DIR        = BUILD_ROOT / "spv"
 SPV_HEADER_DIR = PROJECT_ROOT / "include" / "backend" / "vulkan" / "spv"
 
 GLSLC = "glslc"
@@ -129,11 +129,11 @@ def build_shaders() -> bool:
     return True
 
 
-def clean_shaders():
+def clean_shaders(clean_headers: bool = False):
     if SPV_DIR.exists():
         shutil.rmtree(SPV_DIR)
         print(f"Removed {SPV_DIR}")
-    if SPV_HEADER_DIR.exists():
+    if clean_headers and SPV_HEADER_DIR.exists():
         for f in SPV_HEADER_DIR.glob("*.h"):
             f.unlink()
             print(f"Removed {f}")
@@ -141,15 +141,31 @@ def clean_shaders():
 
 # ======================== CMake Build ========================
 
-def cmake_configure(backends: dict[str, bool], build_test: bool) -> bool:
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+def selected_build_dir(backends: dict[str, bool]) -> Path:
+    for backend in ("cuda", "vulkan", "sycl"):
+        if backends.get(backend):
+            return BUILD_ROOT / f"{backend}-release"
+    return BUILD_ROOT / "cpu-release"
+
+
+def cmake_path(path: str) -> str:
+    return str(Path(path)).replace("\\", "/").replace(".EXE", ".exe")
+
+
+def cmake_configure(backends: dict[str, bool], build_test: bool) -> Path | None:
+    build_dir = selected_build_dir(backends)
+    build_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "cmake", str(PROJECT_ROOT),
+        "cmake",
+        "-S", str(PROJECT_ROOT),
+        "-B", str(build_dir),
         "-G", "Ninja" if shutil.which("ninja") else "Unix Makefiles",
     ]
-    if shutil.which("ninja"):
-        cmd += ["-G", "Ninja"]
+    cc = shutil.which("gcc")
+    cxx = shutil.which("g++")
+    if cc and cxx:
+        cmd += [f"-DCMAKE_C_COMPILER={cmake_path(cc)}", f"-DCMAKE_CXX_COMPILER={cmake_path(cxx)}"]
 
     for name, enabled in backends.items():
         flag = f"-DBACKEND_{name.upper()}={'ON' if enabled else 'OFF'}"
@@ -158,16 +174,16 @@ def cmake_configure(backends: dict[str, bool], build_test: bool) -> bool:
     cmd.append(f"-DBUILD_TEST={'ON' if build_test else 'OFF'}")
 
     print(f"\n[CMake] Configure: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=BUILD_DIR)
+    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
     if result.returncode != 0:
         print("[CMake] Configure failed!")
-        return False
+        return None
     print("[CMake] Configure done.")
-    return True
+    return build_dir
 
 
-def cmake_build(jobs: int) -> bool:
-    cmd = ["cmake", "--build", str(BUILD_DIR)]
+def cmake_build(build_dir: Path, jobs: int) -> bool:
+    cmd = ["cmake", "--build", str(build_dir)]
     if jobs > 1:
         cmd.append(f"-j{jobs}")
 
@@ -181,9 +197,9 @@ def cmake_build(jobs: int) -> bool:
 
 
 def clean_cmake():
-    if BUILD_DIR.exists():
-        shutil.rmtree(BUILD_DIR)
-        print(f"Removed {BUILD_DIR}")
+    if BUILD_ROOT.exists():
+        shutil.rmtree(BUILD_ROOT)
+        print(f"Removed {BUILD_ROOT}")
 
 
 # ======================== Main ========================
@@ -249,9 +265,10 @@ Examples:
     # CMake steps
     jobs = args.j if args.j > 0 else (0)  # 0 = let cmake decide
 
-    if not cmake_configure(backends, args.test):
+    build_dir = cmake_configure(backends, args.test)
+    if build_dir is None:
         sys.exit(1)
-    if not cmake_build(jobs):
+    if not cmake_build(build_dir, jobs):
         sys.exit(1)
 
     print("\nAll done.")

@@ -8,14 +8,12 @@
 #include <format>
 #include <print>
 #include <cstring>
+#include <ctime>
 #include "tensor.hpp"
 #include "utils/bfloat16.hpp"
 
 #ifdef BACKEND_CUDA
 #include <cuda_runtime.h>
-#endif
-#ifdef BACKEND_VULKAN
-#include "backend/vulkan/vulkan_context.h"
 #endif
 #ifdef BACKEND_VULKAN
 #include "backend/vulkan/vulkan_context.h"
@@ -27,12 +25,21 @@ constexpr const char* COLOR_RED    = "\033[31m";
 constexpr const char* COLOR_YELLOW = "\033[33m";
 constexpr const char* COLOR_CYAN   = "\033[36m";
 
+inline std::tm genllm_local_time(std::time_t t) {
+    std::tm tm_info{};
+#if defined(_WIN32)
+    localtime_s(&tm_info, &t);
+#else
+    localtime_r(&t, &tm_info);
+#endif
+    return tm_info;
+}
+
 // 日志基础宏（内部使用）
 #define LOG_BASE(level, color, msg) do { \
     auto now = std::chrono::system_clock::now(); \
     std::time_t t = std::chrono::system_clock::to_time_t(now); \
-    std::tm tm_info; \
-    localtime_r(&t, &tm_info); \
+    std::tm tm_info = genllm_local_time(t); \
     std::cerr << color << "[" << level << "] " \
               << std::put_time(&tm_info, "%Y-%m-%d %H:%M:%S") \
               << " [" << __FILE__ << ":" << __LINE__ << "]" \
@@ -308,4 +315,3 @@ namespace ops{
         );
     }
 }
-

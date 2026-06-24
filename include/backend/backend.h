@@ -123,6 +123,9 @@ private:
     void detect_devices() const {
         devices_.clear();
         auto& registry = BackendRegistry::instance();
+        if (registry.get_providers().empty()) {
+            registry.register_provider(std::make_unique<CPUBackendProvider>());
+        }
         for (const auto& provider : registry.get_providers()) {
             int count = provider->get_device_count();
             for (int i = 0; i < count; ++i) {
@@ -141,6 +144,7 @@ public:
     DeviceManager& operator=(const DeviceManager&) = delete;
 
     void print_devices() const {
+        (void)get_devices();
         auto& registry = BackendRegistry::instance();
         std::println("======================= Detected Devices =======================");
         for (const auto& provider : registry.get_providers()) {

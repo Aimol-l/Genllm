@@ -5,6 +5,8 @@
 
 // 144字节
 constexpr int QK_K = 256;
+constexpr int QK4_NL = 32;
+
 struct Block_Q4_K {
     float16_t d;            // 超级块的全局缩放因子 (fp16)
     float16_t dmin;         // 超级块的全局最小值因子 (fp16)
@@ -20,7 +22,19 @@ struct Block_Q6_K {
     float16_t d;             // super-block scale
 };
 
+struct Block_IQ4_NL {
+    float16_t d;
+    uint8_t qs[QK4_NL / 2];
+};
+
+static_assert(sizeof(Block_IQ4_NL) == sizeof(float16_t) + QK4_NL / 2);
+
 namespace quant{
+    inline constexpr int8_t kvalues_iq4nl[16] = {
+        -127, -104, -83, -65, -49, -35, -22, -10,
+           1,   13,  25,  38,  53,  69,  89, 113
+    };
+
     inline void get_scale_min_k4(int j, const uint8_t * q, uint8_t * d, uint8_t*  m) {
         if (j < 4) {
             *d = q[j] & 63; *m = q[j + 4] & 63;
@@ -76,6 +90,19 @@ namespace quant{
                 qh += 32;
                 sc += 8;
             }
+        }
+    }
+
+    inline void dequantize_row_iq4_nl(const Block_IQ4_NL* x, bfloat16_t* y, int64_t k) {
+        const int64_t nb = k / QK4_NL;
+        for (int64_t i = 0; i < nb; ++i) {
+            const float d = float(x[i].d);
+            const uint8_t* qs = x[i].qs;
+            for (int j = 0; j < QK4_NL / 2; ++j) {
+                y[j] = bfloat16_t(d * kvalues_iq4nl[qs[j] & 0x0f]);
+                y[j + QK4_NL / 2] = bfloat16_t(d * kvalues_iq4nl[qs[j] >> 4]);
+            }
+            y += QK4_NL;
         }
     }
 }
