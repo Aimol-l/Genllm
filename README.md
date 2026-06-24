@@ -145,6 +145,8 @@ Vulkan 后端在 decode 阶段使用 warp-level GEMV（非 cooperative matrix）
 | Qwen3-0.6B | Vulkan | ~44 |
 | Qwen3-4B   | Vulkan | ~24 |
 
+CPU-only 对比测试和后续优化路线见：[docs/cpu_only_benchmark_and_optimization.md](docs/cpu_only_benchmark_and_optimization.md)。
+
 ## 当前限制
 
 - 仅支持 batch=1 推理
